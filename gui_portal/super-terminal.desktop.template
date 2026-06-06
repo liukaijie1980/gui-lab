@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=超级终端
+Name[zh_CN]=超级终端
+Comment=打开命令行终端
+Exec=xfce4-terminal
+Icon=org.xfce.terminalemulator
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupNotify=true

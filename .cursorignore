@@ -1,0 +1,2 @@
+# 忽略 aaa_server 目录，避免 Cursor AI 索引和访问
+aaa_server/

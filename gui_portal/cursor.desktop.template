@@ -1,0 +1,20 @@
+[Desktop Entry]
+Name=Cursor
+Name[zh_CN]=Cursor
+Comment=The AI Code Editor.
+GenericName=Text Editor
+Exec=/usr/local/bin/cursor --no-sandbox %F
+Icon=co.anysphere.cursor
+Type=Application
+StartupNotify=false
+StartupWMClass=Cursor
+Categories=TextEditor;Development;IDE;
+MimeType=application/x-cursor-workspace;
+Actions=new-empty-window;
+Keywords=cursor;
+
+[Desktop Action new-empty-window]
+Name=New Empty Window
+Name[zh_CN]=新建空窗口
+Exec=/usr/local/bin/cursor --no-sandbox --new-window %F
+Icon=co.anysphere.cursor

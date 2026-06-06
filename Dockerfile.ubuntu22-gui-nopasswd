@@ -1,0 +1,50 @@
+FROM kasmweb/ubuntu-jammy-desktop:1.16.0
+
+COPY gui_portal/kasm-ssh-bashrc.snippet /etc/kasm-ssh-bashrc.snippet
+
+USER root
+
+# Give kasm-user passwordless sudo, matching "gui + NOPASSWD" workflow.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends sudo openssh-server; \
+    rm -rf /var/lib/apt/lists/*; \
+    usermod -aG sudo kasm-user; \
+    usermod -s /bin/bash kasm-user; \
+    printf '%s\n' \
+      '# GUI 容器 SSH — login shell loads .bashrc' \
+      'if [ -n "${BASH_VERSION:-}" ]; then' \
+      '  if [ -f "$HOME/.bashrc" ]; then' \
+      '    . "$HOME/.bashrc"' \
+      '  fi' \
+      'fi' \
+      >/etc/skel/.profile; \
+    printf 'kasm-user ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/90-kasm-user-nopasswd; \
+    chmod 0440 /etc/sudoers.d/90-kasm-user-nopasswd; \
+    mkdir -p /var/run/sshd; \
+    sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config; \
+    sed -i 's/^#\\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config; \
+    sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
+    install -d -m 0755 -o 1000 -g 1000 /home/kasm-user/.config/kasmvnc; \
+    printf '%s\n' \
+      'security:' \
+      '  brute_force_protection:' \
+      '    blacklist_threshold: 0' \
+      >/home/kasm-user/.config/kasmvnc/kasmvnc.yaml; \
+    chown 1000:1000 /home/kasm-user/.config/kasmvnc/kasmvnc.yaml; \
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'set -euo pipefail' \
+      'if command -v sshd >/dev/null 2>&1; then' \
+      '  sudo mkdir -p /var/run/sshd' \
+      '  sudo chmod 0755 /var/run/sshd' \
+      '  if ! pgrep -x sshd >/dev/null 2>&1; then' \
+      '    sudo /usr/sbin/sshd' \
+      '  fi' \
+      'fi' \
+      'exec sleep infinity' \
+      >/dockerstartup/custom_startup.sh; \
+    chmod 0755 /dockerstartup/custom_startup.sh; \
+    sed -i '/kasmvncpasswd -u kasm_viewer -r/a echo -e "${VNC_PW}\\n${VNC_PW}\\n" | kasmvncpasswd -u kasm-user -r' /dockerstartup/vnc_startup.sh
+
+USER 1000

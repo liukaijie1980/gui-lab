@@ -1,0 +1,17 @@
+{
+  "instances": [
+    {
+      "account_label": "alice",
+      "account_slug": "alice",
+      "login_user": "kasm_user",
+      "container_name": "gui-alice",
+      "gui_port": 6901,
+      "vnc_native_port": 5901,
+      "ssh_port": 2201,
+      "vnc_pw": "ChangeMe_123456",
+      "ssh_login_user": "kasm-user",
+      "created_at": "2026-01-01T00:00:00Z",
+      "extra_ports": []
+    }
+  ]
+}

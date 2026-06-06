@@ -1,0 +1,4 @@
+# 锁定 NVIDIA 580 驱动到 580.159.03，防止 apt upgrade 后内核模块与用户态库版本不一致
+Package: nvidia-*-580 libnvidia-*-580 xserver-xorg-video-nvidia-580 nvidia-firmware-580-*
+Pin: version 580.159.03-0ubuntu0.22.04.1
+Pin-Priority: 1001

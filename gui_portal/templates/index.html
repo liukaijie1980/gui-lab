@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Ubuntu GUI 容器管理</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4d;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3d8bfd;
+      --danger: #e05454;
+      --ok: #3ecf8e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1.25rem;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 0.5rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.25rem; }
+    .grid {
+      display: grid;
+      gap: 1rem;
+      max-width: 1100px;
+    }
+    @media (min-width: 880px) {
+      .grid-cols { grid-template-columns: 320px 1fr; align-items: start; }
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+    }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+    input[type="text"], input[type="password"], input[type="number"] {
+      width: 100%;
+      padding: 0.5rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #121922;
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+    input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+    .row { margin-bottom: 0.75rem; }
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 6px;
+      padding: 0.45rem 0.85rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { filter: brightness(1.08); }
+    .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-sm { padding: 0.35rem 0.6rem; font-size: 0.8rem; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th, td { text-align: left; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .badge { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 4px; font-size: 0.75rem; }
+    .badge-run { background: rgba(62,207,142,0.15); color: var(--ok); }
+    .badge-stop { background: rgba(224,84,84,0.15); color: var(--danger); }
+    .badge-miss { background: rgba(139,156,179,0.12); color: var(--muted); }
+    .msg { white-space: pre-wrap; font-size: 0.8rem; background: #121922; border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem; margin-top: 0.5rem; max-height: 160px; overflow: auto; }
+    .err { color: var(--danger); font-size: 0.875rem; margin-top: 0.35rem; }
+    .ok-msg { color: var(--ok); font-size: 0.875rem; margin-top: 0.35rem; white-space: pre-wrap; }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.35rem; }
+    .pw-cell { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; }
+    .pw-mask { font-family: ui-monospace, monospace; letter-spacing: 0.05em; min-width: 4.5rem; }
+    .pw-toggle {
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      background: rgba(61, 139, 253, 0.12);
+      padding: 0.2rem 0.55rem;
+      font-size: 0.75rem;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .pw-toggle:hover { filter: brightness(1.15); }
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      max-width: 520px;
+      width: 100%;
+      max-height: 90vh;
+      overflow: auto;
+      padding: 1rem 1.1rem;
+    }
+    .modal h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+    .port-grid { display: grid; grid-template-columns: 1fr 1fr 90px auto; gap: 0.5rem; align-items: end; }
+    @media (max-width: 520px) {
+      .port-grid { grid-template-columns: 1fr 1fr; }
+      .port-grid .proto-col { grid-column: 1; }
+      .port-grid .btn-col { grid-column: 2; justify-self: end; }
+    }
+    .port-list { margin: 0.75rem 0; font-size: 0.85rem; }
+    .port-list li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.35rem 0;
+      border-bottom: 1px solid var(--border);
+      gap: 0.5rem;
+    }
+    .port-arrow { color: var(--muted); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <div class="grid grid-cols">
+    <div>
+      <h1>Ubuntu GUI 容器</h1>
+      <p class="sub">每账户一个容器；容器名自动为 <strong>gui-账号</strong>。<strong>浏览器桌面</strong>请用 <strong>kasm_user</strong> 或 <strong>kasm-user</strong> + 下方密码（勿填账户名）。SSH 用 <strong>kasm-user</strong>。</p>
+
+      {% if need_login and not logged_in %}
+      <div class="card">
+        <form method="post" action="/login">
+          <div class="row">
+            <label for="lpw">管理密码</label>
+            <input id="lpw" name="password" type="password" required autocomplete="current-password"/>
+          </div>
+          <button type="submit" class="btn-primary">登录</button>
+        </form>
+      </div>
+      {% else %}
+
+      {% if need_login and logged_in %}
+      <form method="post" action="/logout" style="margin-bottom:0.75rem;">
+        <button type="submit" class="btn-ghost btn-sm">退出登录</button>
+      </form>
+      {% endif %}
+
+      <div class="card">
+        <h2 style="font-size:1rem;margin:0 0 0.75rem;">新建实例</h2>
+        <form id="create-form">
+          <div class="row">
+            <label for="account">账户名（容器名将自动为 gui-账户名）</label>
+            <input id="account" name="account" type="text" required placeholder="例如 alice 或 dev-a"/>
+          </div>
+          <div class="row">
+            <label for="password">Web / VNC / SSH 密码（创建时设置）</label>
+            <input id="password" name="password" type="password" required minlength="6" autocomplete="new-password" placeholder="至少 6 位强密码"/>
+          </div>
+          <div class="row">
+            <label for="gui_port">HTTPS 端口（可选，留空则自动顺延）</label>
+            <input id="gui_port" name="gui_port" type="number" min="1025" max="65535" placeholder="如 6902"/>
+          </div>
+          <p class="hint">浏览器登录：<strong>kasm_user</strong> 或 <strong>kasm-user</strong> + 本表单密码（<strong>不是</strong>账户名）。若只能看不能点，请断开重连或点「启动」同步权限。</p>
+          <p class="hint">自动分配时：VNC 端口 = HTTPS − 1000；SSH 端口 = HTTPS − 4700（与 README 一致）。</p>
+          <button type="submit" class="btn-primary">创建并启动</button>
+          <div id="create-err" class="err"></div>
+          <div id="create-log" class="msg" style="display:none;"></div>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if not need_login or logged_in %}
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+        <h2 style="font-size:1rem;margin:0;">实例列表</h2>
+        <button type="button" class="btn-ghost btn-sm" id="btn-refresh">刷新</button>
+      </div>
+      <p class="hint" id="meta"></p>
+      <div id="list-err" class="err"></div>
+      <div id="list-status" class="hint" style="min-height:1.25em;margin-top:0.25rem;"></div>
+      <div style="overflow-x:auto;margin-top:0.5rem;">
+        <table>
+          <thead>
+            <tr>
+              <th>账户</th>
+              <th>容器</th>
+              <th>登录</th>
+              <th>端口</th>
+              <th>密码</th>
+              <th>快照</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div id="ports-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="ports-modal-title">
+      <h3 id="ports-modal-title">额外端口映射</h3>
+      <p class="hint" id="ports-modal-sub"></p>
+      <p class="hint">将容器内端口发布到宿主机，例如容器 <strong>80</strong> → 宿主机 <strong>8080</strong>。添加或删除后会<strong>重建容器</strong>（短暂中断桌面）。Web/VNC/SSH 端口请在创建时或「重建」流程中调整。</p>
+      <ul id="ports-list" class="port-list"></ul>
+      <form id="ports-add-form">
+        <div class="port-grid">
+          <div>
+            <label for="pm-container">容器端口</label>
+            <input id="pm-container" name="container_port" type="number" min="1" max="65535" required placeholder="80"/>
+          </div>
+          <div>
+            <label for="pm-host">宿主机端口</label>
+            <input id="pm-host" name="host_port" type="number" min="1024" max="65535" required placeholder="8080"/>
+          </div>
+          <div class="proto-col">
+            <label for="pm-proto">协议</label>
+            <select id="pm-proto" name="protocol" style="width:100%;padding:0.5rem;border-radius:6px;border:1px solid var(--border);background:#121922;color:var(--text);">
+              <option value="tcp" selected>TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          </div>
+          <div class="btn-col">
+            <button type="submit" class="btn-primary btn-sm">添加并应用</button>
+          </div>
+        </div>
+      </form>
+      <div id="ports-err" class="err"></div>
+      <div id="ports-status" class="hint" style="min-height:1em;margin-top:0.35rem;"></div>
+      <div class="toolbar" style="margin-top:0.75rem;">
+        <button type="button" class="btn-ghost btn-sm" id="ports-modal-close">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  {% if not need_login or logged_in %}
+  <script>
+    const tbody = document.getElementById('tbody');
+    const meta = document.getElementById('meta');
+    const listErr = document.getElementById('list-err');
+    const listStatus = document.getElementById('list-status');
+
+    async function fetchJSON(url, opt) {
+      const r = await fetch(url, { credentials: 'same-origin', ...opt });
+      if (r.status === 401) { window.location.reload(); throw new Error('需要重新登录'); }
+      const text = await r.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error(text || r.statusText); }
+      if (!r.ok) {
+        let detail = data.detail || text || r.statusText;
+        if (Array.isArray(detail)) {
+          detail = detail.map((x) => x.msg || JSON.stringify(x)).join('; ');
+        }
+        throw new Error(detail);
+      }
+      return data;
+    }
+
+    function badge(status, missing) {
+      if (missing) return '<span class="badge badge-miss">未找到容器</span>';
+      const run = status === 'running';
+      return `<span class="badge ${run ? 'badge-run' : 'badge-stop'}">${status || 'unknown'}</span>`;
+    }
+
+    async function loadList() {
+      listErr.textContent = '';
+      if (listStatus) { listStatus.textContent = ''; listStatus.className = 'hint'; }
+      try {
+        const data = await fetchJSON('/api/instances');
+        meta.textContent = data.script_exists
+          ? `数据根: ${data.root}`
+          : '警告: 未找到 run-ubuntu22-gui.sh，创建会失败';
+        tbody.innerHTML = '';
+        for (const i of data.instances) {
+          const d = i.docker;
+          const miss = !d;
+          const st = miss ? '' : d.status;
+          const reg = i.registered !== false;
+          const gp = i.gui_port != null && i.gui_port !== '' ? i.gui_port : '—';
+          const vp = i.vnc_native_port != null && i.vnc_native_port !== '' ? i.vnc_native_port : '—';
+          const sp = i.ssh_port != null && i.ssh_port !== '' ? i.ssh_port : (gp !== '—' ? gp - 4700 : '—');
+          const sshUser = escapeHtml(i.ssh_login_user || 'kasm-user');
+          const pw = i.ssh_pw || i.vnc_pw || '';
+          const pwCell = pw
+            ? `<div class="pw-cell"><span class="pw-mask">••••••••</span><button type="button" class="pw-toggle" data-pw="${encodeURIComponent(pw)}">显示密码</button></div>`
+            : '<span style="color:var(--muted)">未登记</span>';
+          const tr = document.createElement('tr');
+          const https = gp !== '—' ? `https://&lt;主机&gt;:${gp}` : '—';
+          const vnc = vp !== '—' ? `&lt;主机&gt;:${vp}` : '—';
+          const ssh = sp !== '—' ? `ssh -p ${sp} ${sshUser}@&lt;主机&gt;` : '—';
+          const extra = (i.extra_ports_live && i.extra_ports_live.length)
+            ? i.extra_ports_live
+            : (i.extra_ports || []);
+          const extraLines = extra.length
+            ? extra.map(p => `+ ${p.host}→${p.container}/${p.protocol || 'tcp'}`).join('<br/>')
+            : '';
+          const noState = !reg;
+          tr.innerHTML = `
+            <td>${escapeHtml(i.account_label)}${noState ? '<br/><span style="font-size:0.75rem;color:var(--muted)">未登记</span>' : ''}</td>
+            <td><code>${escapeHtml(i.container_name)}</code></td>
+            <td>Web <code>kasm_user</code> / <code>kasm-user</code><br/>SSH <code>${sshUser}</code><br/><span style="font-size:0.75rem;color:var(--muted)">Web 无鼠标请重连</span></td>
+            <td>Web <code>${gp}</code><br/>VNC <code>${vp}</code><br/>SSH <code>${sp}</code>${extraLines ? '<br/><span style="font-size:0.75rem;color:var(--accent)">' + extraLines + '</span>' : ''}<br/><span style="font-size:0.75rem;color:var(--muted)">${https}<br/>VNC ${vnc}<br/>${ssh}</span></td>
+            <td>${pwCell}<br/><span style="font-size:0.75rem;color:var(--muted)">口令相同；Web 勿填账户名</span></td>
+            <td>${i.snapshot_count || 0}${i.latest_snapshot ? `<br/><span style="font-size:0.75rem;color:var(--muted)">${escapeHtml(i.latest_snapshot.created_at || '')}</span>` : ''}</td>
+            <td>${badge(st, miss)}</td>
+            <td>
+              <div class="toolbar">
+                <button type="button" class="btn-primary btn-sm act-start" data-name="${escapeHtml(i.container_name)}" ${miss ? 'disabled' : ''}>启动</button>
+                <button type="button" class="btn-ghost btn-sm act-stop" data-name="${escapeHtml(i.container_name)}" ${miss ? 'disabled' : ''}>停止</button>
+                <button type="button" class="btn-ghost btn-sm act-ports" data-name="${escapeHtml(i.container_name)}" ${noState ? 'disabled' : ''}>端口映射</button>
+                <button type="button" class="btn-ghost btn-sm act-recreate" data-name="${escapeHtml(i.container_name)}" ${miss || noState ? 'disabled' : ''}>重建</button>
+                <button type="button" class="btn-ghost btn-sm act-save-snap" data-name="${escapeHtml(i.container_name)}" ${miss || noState ? 'disabled' : ''}>保存快照</button>
+                <button type="button" class="btn-ghost btn-sm act-load-snap" data-name="${escapeHtml(i.container_name)}" ${noState ? 'disabled' : ''}>加载最新</button>
+                <button type="button" class="btn-danger btn-sm act-delete" data-name="${escapeHtml(i.container_name)}">从列表删除</button>
+              </div>
+            </td>`;
+          tbody.appendChild(tr);
+        }
+        tbody.querySelectorAll('.pw-toggle').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const mask = btn.parentElement?.querySelector('.pw-mask');
+            if (!mask || !btn.dataset.pw) return;
+            const hidden = btn.textContent.includes('显示');
+            if (hidden) {
+              mask.textContent = decodeURIComponent(btn.dataset.pw);
+              btn.textContent = '隐藏密码';
+            } else {
+              mask.textContent = '••••••••';
+              btn.textContent = '显示密码';
+            }
+          });
+        });
+        tbody.querySelectorAll('.act-start').forEach(btn => btn.addEventListener('click', () => doAction('start', btn.dataset.name)));
+        tbody.querySelectorAll('.act-stop').forEach(btn => btn.addEventListener('click', () => doAction('stop', btn.dataset.name)));
+        tbody.querySelectorAll('.act-recreate').forEach(btn => btn.addEventListener('click', () => doRecreate(btn.dataset.name)));
+        tbody.querySelectorAll('.act-save-snap').forEach(btn => btn.addEventListener('click', () => doSaveSnapshot(btn)));
+        tbody.querySelectorAll('.act-load-snap').forEach(btn => btn.addEventListener('click', () => doLoadSnapshot(btn.dataset.name)));
+        tbody.querySelectorAll('.act-delete').forEach(btn => btn.addEventListener('click', () => doDelete(btn.dataset.name)));
+        tbody.querySelectorAll('.act-ports').forEach(btn => btn.addEventListener('click', () => openPortsModal(btn.dataset.name)));
+      } catch (e) {
+        listErr.textContent = e.message || String(e);
+      }
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    async function doAction(kind, name) {
+      listErr.textContent = '';
+      try {
+        await fetchJSON(`/api/instances/${encodeURIComponent(name)}/${kind}`, { method: 'POST' });
+        await loadList();
+      } catch (e) {
+        listErr.textContent = e.message || String(e);
+      }
+    }
+
+    async function doRecreate(name) {
+      if (!confirm('重建会短暂中断桌面，并执行 RECREATE=1。确定？')) return;
+      listErr.textContent = '';
+      try {
+        const data = await fetchJSON(`/api/instances/${encodeURIComponent(name)}/recreate`, { method: 'POST' });
+        if (data.log) alert('重建完成。日志片段：\\n' + data.log.slice(0, 2000));
+        await loadList();
+      } catch (e) {
+        listErr.textContent = e.message || String(e);
+      }
+    }
+
+    async function doDelete(name) {
+      if (!confirm('从列表删除并删除容器？家目录数据仍会保留在 docker_os/ 下。')) return;
+      listErr.textContent = '';
+      try {
+        await fetchJSON(`/api/instances/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        await loadList();
+      } catch (e) {
+        listErr.textContent = e.message || String(e);
+      }
+    }
+
+    async function doSaveSnapshot(btn) {
+      const name = btn.dataset.name;
+      const label = btn.textContent;
+      listErr.textContent = '';
+      if (listStatus) {
+        listStatus.className = 'hint';
+        listStatus.textContent = '正在保存快照（docker commit + save，镜像较大时可能需数分钟，请勿关闭此页）…';
+      }
+      btn.disabled = true;
+      btn.textContent = '保存中…';
+      try {
+        const data = await fetchJSON(`/api/instances/${encodeURIComponent(name)}/snapshot/save`, { method: 'POST' });
+        const path = data.snapshot?.tar_path || '';
+        await loadList();
+        if (listStatus) {
+          listStatus.className = 'ok-msg';
+          listStatus.textContent = '快照已保存成功。\n' + (path ? '文件：' + path : '');
+        }
+      } catch (e) {
+        listErr.textContent = e.message || String(e);
+        if (listStatus) { listStatus.textContent = ''; listStatus.className = 'hint'; }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    }
+
+    async function doLoadSnapshot(name) {
+      if (!confirm('将从最新快照重建该容器（会中断当前会话）。确定？')) return;
+      listErr.textContent = '';
+      try {
+        await fetchJSON(`/api/instances/${encodeURIComponent(name)}/snapshot/load_latest`, { method: 'POST' });
+        await loadList();
+      } catch (e) {
+        listErr.textContent = e.message || String(e);
+      }
+    }
+
+    const form = document.getElementById('create-form');
+    if (form) {
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const errEl = document.getElementById('create-err');
+        const logEl = document.getElementById('create-log');
+        errEl.textContent = '';
+        logEl.style.display = 'none';
+        const fd = new FormData(form);
+        try {
+          const data = await fetchJSON('/api/instances/create', { method: 'POST', body: fd });
+          if (data.log) {
+            logEl.style.display = 'block';
+            logEl.textContent = data.log;
+          }
+          form.reset();
+          await loadList();
+        } catch (e) {
+          errEl.textContent = e.message || String(e);
+        }
+      });
+    }
+
+    let portsModalContainer = '';
+
+    function closePortsModal() {
+      const el = document.getElementById('ports-modal');
+      if (el) { el.classList.remove('open'); el.setAttribute('aria-hidden', 'true'); }
+      portsModalContainer = '';
+    }
+
+    async function refreshPortsList() {
+      const listEl = document.getElementById('ports-list');
+      const errEl = document.getElementById('ports-err');
+      const statusEl = document.getElementById('ports-status');
+      if (!portsModalContainer || !listEl) return;
+      errEl.textContent = '';
+      statusEl.textContent = '';
+      try {
+        const data = await fetchJSON(`/api/instances/${encodeURIComponent(portsModalContainer)}/ports`);
+        const rows = data.configured && data.configured.length ? data.configured : (data.live || []);
+        listEl.innerHTML = '';
+        if (!rows.length) {
+          listEl.innerHTML = '<li style="color:var(--muted);border:none;">暂无额外映射</li>';
+        } else {
+          for (const p of rows) {
+            const li = document.createElement('li');
+            li.innerHTML = `
+              <span><code>${p.host}</code> <span class="port-arrow">→</span> 容器 <code>${p.container}</code> / ${escapeHtml(p.protocol || 'tcp')}</span>
+              <button type="button" class="btn-danger btn-sm act-rm-port" data-host="${p.host}">删除</button>`;
+            listEl.appendChild(li);
+          }
+          listEl.querySelectorAll('.act-rm-port').forEach(btn => {
+            btn.addEventListener('click', () => removePortMapping(btn.dataset.host, btn));
+          });
+        }
+        if (data.in_sync === false) {
+          statusEl.textContent = '提示：登记配置与容器当前映射不一致，可删除后重新添加或点「重建」同步。';
+        }
+      } catch (e) {
+        errEl.textContent = e.message || String(e);
+      }
+    }
+
+    async function openPortsModal(name) {
+      portsModalContainer = name;
+      const sub = document.getElementById('ports-modal-sub');
+      if (sub) sub.textContent = `容器 ${name}`;
+      document.getElementById('ports-modal')?.classList.add('open');
+      document.getElementById('ports-modal')?.setAttribute('aria-hidden', 'false');
+      document.getElementById('ports-add-form')?.reset();
+      await refreshPortsList();
+    }
+
+    async function removePortMapping(hostPort, btn) {
+      if (!confirm(`删除宿主机端口 ${hostPort} 的映射并重建容器？`)) return;
+      const errEl = document.getElementById('ports-err');
+      const statusEl = document.getElementById('ports-status');
+      errEl.textContent = '';
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '…';
+      try {
+        statusEl.textContent = '正在重建容器以移除映射…';
+        await fetchJSON(
+          `/api/instances/${encodeURIComponent(portsModalContainer)}/ports?host_port=${encodeURIComponent(hostPort)}`,
+          { method: 'DELETE' }
+        );
+        await refreshPortsList();
+        await loadList();
+        statusEl.className = 'ok-msg';
+        statusEl.textContent = '已删除并应用。';
+      } catch (e) {
+        errEl.textContent = e.message || String(e);
+        statusEl.textContent = '';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    }
+
+    document.getElementById('ports-modal-close')?.addEventListener('click', closePortsModal);
+    document.getElementById('ports-modal')?.addEventListener('click', (ev) => {
+      if (ev.target.id === 'ports-modal') closePortsModal();
+    });
+
+    const portsAddForm = document.getElementById('ports-add-form');
+    if (portsAddForm) {
+      portsAddForm.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        if (!portsModalContainer) return;
+        const errEl = document.getElementById('ports-err');
+        const statusEl = document.getElementById('ports-status');
+        errEl.textContent = '';
+        const fd = new FormData(portsAddForm);
+        try {
+          statusEl.className = 'hint';
+          statusEl.textContent = '正在添加映射并重建容器（可能需 1–2 分钟）…';
+          await fetchJSON(`/api/instances/${encodeURIComponent(portsModalContainer)}/ports`, {
+            method: 'POST',
+            body: fd,
+          });
+          portsAddForm.reset();
+          await refreshPortsList();
+          await loadList();
+          statusEl.className = 'ok-msg';
+          statusEl.textContent = '端口映射已添加并生效。';
+        } catch (e) {
+          errEl.textContent = e.message || String(e);
+          statusEl.textContent = '';
+        }
+      });
+    }
+
+    document.getElementById('btn-refresh')?.addEventListener('click', loadList);
+    loadList();
+  </script>
+  {% endif %}
+</body>
+</html>

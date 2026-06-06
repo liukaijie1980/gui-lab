@@ -1,0 +1,22 @@
+# --- GUI 容器 SSH 交互环境（由管理台/迁移脚本注入，勿删此标记）---
+# BEGIN_GUI_PORTAL_SSH
+if [[ -n "${SSH_CONNECTION:-}" ]]; then
+  case $- in *i*) ;; *) return;; esac
+  shopt -s checkwinsize 2>/dev/null || true
+  HISTCONTROL=ignoreboth
+  shopt -s histappend
+  HISTSIZE=1000
+  HISTFILESIZE=2000
+  shopt -s globstar 2>/dev/null || true
+  if [ -f /usr/share/bash-completion/bash_completion ]; then
+    . /usr/share/bash-completion/bash_completion
+  elif [ -f /etc/bash_completion ]; then
+    . /etc/bash_completion
+  fi
+  if [ -x /usr/bin/dircolors ]; then
+    eval "$(dircolors -b)"
+  fi
+  export PS1='\[\e]0;\u@\h: \w\a\]\u@\h:\w\$ '
+  return
+fi
+# END_GUI_PORTAL_SSH

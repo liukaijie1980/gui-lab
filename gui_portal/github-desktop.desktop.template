@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=GitHub Desktop
+Name[zh_CN]=GitHub Desktop
+GenericName=Git Client
+Comment=GitHub Desktop (AppImage)
+Exec=/home/kasm-user/Apps/github-desktop/run-github-desktop.sh %U
+TryExec=/home/kasm-user/Apps/github-desktop/run-github-desktop.sh
+Icon=/home/kasm-user/Apps/github-desktop/github-desktop.png
+Terminal=false
+Categories=Development;RevisionControl;
+StartupNotify=true

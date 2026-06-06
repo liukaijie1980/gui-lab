@@ -1,0 +1,8 @@
+# 临时覆盖：宿主机 NVIDIA 驱动异常（如 driver/library version mismatch）时用于拉起容器。
+# 用法: docker compose -f docker-compose.ubuntu22-gui.yml -f docker-compose.ubuntu22-gui.nogpu.yml ...
+services:
+  ubuntu22-gui:
+    gpus: !reset null
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ""
+      NVIDIA_DRIVER_CAPABILITIES: ""

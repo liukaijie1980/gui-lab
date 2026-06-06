@@ -1,0 +1,41 @@
+services:
+  ubuntu22-gui:
+    image: ubuntu22-gui-nopasswd:jammy
+    build:
+      context: .
+      dockerfile: Dockerfile.ubuntu22-gui-nopasswd
+      args:
+        HTTP_PROXY: "${HTTP_PROXY:-}"
+        HTTPS_PROXY: "${HTTPS_PROXY:-}"
+        NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal}"
+        http_proxy: "${http_proxy:-}"
+        https_proxy: "${https_proxy:-}"
+        no_proxy: "${no_proxy:-localhost,127.0.0.1,::1,host.docker.internal}"
+    container_name: "${CONTAINER_NAME:-ubuntu22-gui}"
+    restart: unless-stopped
+    gpus: all
+    ports:
+      - "${GUI_PORT:-6901}:6901"
+      - "${VNC_NATIVE_PORT:-5901}:5901"
+      - "${SSH_PORT:-2201}:22"
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      VNC_PW: "${VNC_PW:-ChangeMe_123}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      ALL_PROXY: "${ALL_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal}"
+      http_proxy: "${http_proxy:-}"
+      https_proxy: "${https_proxy:-}"
+      all_proxy: "${all_proxy:-}"
+      no_proxy: "${no_proxy:-localhost,127.0.0.1,::1,host.docker.internal}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - "${HOME_DIR:-./docker_os/ubuntu22-gui/home}:/home/kasm-user"
+      # 除家目录外的大文件/工具链等可放此处，删容器重建后仍在（宿主机 ./docker_os/<容器名>/persist）
+      - "${PERSIST_DIR:-./docker_os/ubuntu22-gui/persist}:/persist"
+      - ./shared_apps:/shared_apps
+      - ./apps:/opt/bootstrap/apps:ro
+    shm_size: "1gb"

@@ -1,0 +1,36 @@
+# 复制到 systemd 后按需改名启用：
+#   sudo cp /data/gui_portal/gui-portal.service.example /etc/systemd/system/gui-portal.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gui-portal.service
+#
+# 当前仓库假定：工作目录 /data，用户 lkj（UID 1000）——与容器内 kasm-user 一致，
+# 创建实例时通常不需要 sudo。
+#
+# 若必须以非 1000 用户运行，或为遗留目录修正属主，请配置 NOPASSWD 或事先：
+#   sudo chown -R 1000:1000 /data/docker_os
+
+[Unit]
+Description=GUI Ubuntu22 container management (FastAPI)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lkj
+Group=lkj
+WorkingDirectory=/data
+# 使用系统 python3，或改为 venv 的绝对路径，例如 /data/venv/bin/python3
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# 可选：管理台登录密码
+# Environment=GUI_PORTAL_ADMIN_PASSWORD=强密码
+# 可选：监听地址与端口
+Environment=GUI_PORTAL_HOST=0.0.0.0
+Environment=GUI_PORTAL_PORT=8787
+# 无 TTY 时若仍可能调用 sudo，可设 1 让脚本用 sudo -n（需配置 NOPASSWD，否则 chown 会失败退出）
+# Environment=GUI_PORTAL_SUDO_NONINTERACTIVE=1
+ExecStart=/usr/bin/python3 -m gui_portal.app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
