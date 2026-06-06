@@ -1,4 +1,12 @@
 {
+  "defaults": {
+    "resources": {
+      "cpus": "2",
+      "memory": "4g",
+      "pids_limit": 512,
+      "disk_quota_gb": 30
+    }
+  },
   "instances": [
     {
       "account_label": "alice",
@@ -11,7 +19,13 @@
       "vnc_pw": "ChangeMe_123456",
       "ssh_login_user": "kasm-user",
       "created_at": "2026-01-01T00:00:00Z",
-      "extra_ports": []
+      "extra_ports": [],
+      "resources": {
+        "cpus": "2",
+        "memory": "4g",
+        "pids_limit": 512,
+        "disk_quota_gb": 30
+      }
     }
   ]
 }

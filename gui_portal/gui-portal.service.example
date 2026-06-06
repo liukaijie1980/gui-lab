@@ -28,7 +28,8 @@ Environment=GUI_PORTAL_HOST=0.0.0.0
 Environment=GUI_PORTAL_PORT=8787
 # 无 TTY 时若仍可能调用 sudo，可设 1 让脚本用 sudo -n（需配置 NOPASSWD，否则 chown 会失败退出）
 # Environment=GUI_PORTAL_SUDO_NONINTERACTIVE=1
-ExecStart=/usr/bin/python3 -m gui_portal.app
+ExecStart=/home/lkj/anaconda3/bin/python3 -m gui_portal.app
+# 若使用 venv：ExecStart=/data/.venv/bin/python3 -m gui_portal.app
 Restart=on-failure
 RestartSec=5
 

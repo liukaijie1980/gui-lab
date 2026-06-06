@@ -35,18 +35,7 @@ home_for() {
 
 install_container_wrappers() {
   local cname="$1"
-  docker exec -u root -e "CURSOR_IMG=${APPIMAGE}" "${cname}" bash -c '
-    set -euo pipefail
-    app="/shared_apps/cursor/${CURSOR_IMG}"
-    [[ -x "${app}" ]] || { echo "缺少 ${app}" >&2; exit 1; }
-    printf "%s\n" "#!/usr/bin/env bash" "exec \"${app}\" --appimage-extract-and-run \"\$@\"" >/usr/local/bin/cursor
-    chmod +x /usr/local/bin/cursor
-    if [[ -x /shared_apps/node-global/bin/claude ]]; then
-      ln -sf /shared_apps/node-global/bin/claude /usr/local/bin/claude
-      install -d -m 0755 -o 1000 -g 1000 /home/kasm-user/.local/bin
-      ln -sf /shared_apps/node-global/bin/claude /home/kasm-user/.local/bin/claude
-    fi
-  '
+  "${SCRIPT_DIR}/install-container-app-wrappers.sh" "${cname}"
 }
 
 repair_desktop_files() {

@@ -12,6 +12,7 @@
 # 常用环境变量（均可选，有默认值）：
 #   GUI_PORT / VNC_NATIVE_PORT / SSH_PORT / VNC_PW / CONTAINER_NAME / HOME_DIR / COMPOSE_PROJECT_NAME
 #   EXTRA_PORTS  额外端口映射，逗号分隔，如 8080:80/tcp,8443:443/udp（写入 docker_os/<容器>/extra-ports.compose.yml）
+#   CPU_LIMIT / MEM_LIMIT / MEMSWAP_LIMIT / PIDS_LIMIT  容器资源限制（写入 resource-limits.compose.yml）
 #   RECREATE=1  强制重建已有容器
 # 参数：
 #   $1  可选，容器名（未设 CONTAINER_NAME 时等同该参数）
@@ -171,6 +172,10 @@ SSH_PORT=${SSH_PORT}
 VNC_PW=${VNC_PW}
 CONTAINER_NAME=${CONTAINER_NAME}
 HOME_DIR=${HOME_DIR}
+CPU_LIMIT=${CPU_LIMIT:-}
+MEM_LIMIT=${MEM_LIMIT:-}
+MEMSWAP_LIMIT=${MEMSWAP_LIMIT:-}
+PIDS_LIMIT=${PIDS_LIMIT:-}
 HTTP_PROXY=${HTTP_PROXY_MAPPED}
 HTTPS_PROXY=${HTTPS_PROXY_MAPPED}
 ALL_PROXY=${ALL_PROXY_MAPPED}
@@ -228,6 +233,46 @@ elif [[ -f "${PORTS_OVERRIDE}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 资源限制：生成 compose 覆盖（CPU / 内存 / 进程数）
+# ---------------------------------------------------------------------------
+CPU_LIMIT="${CPU_LIMIT:-}"
+MEM_LIMIT="${MEM_LIMIT:-}"
+MEMSWAP_LIMIT="${MEMSWAP_LIMIT:-}"
+PIDS_LIMIT="${PIDS_LIMIT:-}"
+RESOURCE_OVERRIDE="${SCRIPT_DIR}/docker_os/${CONTAINER_NAME}/resource-limits.compose.yml"
+compose_resource=()
+_has_resource_limit=0
+if [[ -n "${CPU_LIMIT}" || -n "${MEM_LIMIT}" || -n "${PIDS_LIMIT}" ]]; then
+  _has_resource_limit=1
+fi
+if [[ "${_has_resource_limit}" -eq 1 ]]; then
+  mkdir -p "$(dirname "${RESOURCE_OVERRIDE}")"
+  {
+    echo "services:"
+    echo "  ubuntu22-gui:"
+    if [[ -n "${CPU_LIMIT}" ]]; then
+      echo "    cpus: \"${CPU_LIMIT}\""
+    fi
+    if [[ -n "${MEM_LIMIT}" ]]; then
+      echo "    mem_limit: ${MEM_LIMIT}"
+      if [[ -n "${MEMSWAP_LIMIT}" ]]; then
+        echo "    memswap_limit: ${MEMSWAP_LIMIT}"
+      else
+        echo "    memswap_limit: ${MEM_LIMIT}"
+      fi
+    fi
+    if [[ -n "${PIDS_LIMIT}" ]]; then
+      echo "    pids_limit: ${PIDS_LIMIT}"
+    fi
+  } > "${RESOURCE_OVERRIDE}"
+  compose_resource+=(-f "${RESOURCE_OVERRIDE}")
+  _res_summary="CPU=${CPU_LIMIT:-∞} MEM=${MEM_LIMIT:-∞} PIDS=${PIDS_LIMIT:-∞}"
+  echo "资源限制: ${_res_summary}"
+elif [[ -f "${RESOURCE_OVERRIDE}" ]]; then
+  rm -f "${RESOURCE_OVERRIDE}"
+fi
+
+# ---------------------------------------------------------------------------
 # 拉起容器：已存在时默认不 --force-recreate（避免每次冷启动与重复安装）。
 # 需改端口/环境并重建实例时: RECREATE=1 ./run-ubuntu22-gui.sh
 # 宿主机 NVIDIA 异常时可: NO_GPU=1 RECREATE=1 ./run-ubuntu22-gui.sh
@@ -235,6 +280,9 @@ fi
 compose_files=(-f "${COMPOSE_FILE}")
 if [[ ${#compose_extra[@]} -gt 0 ]]; then
   compose_files+=("${compose_extra[@]}")
+fi
+if [[ ${#compose_resource[@]} -gt 0 ]]; then
+  compose_files+=("${compose_resource[@]}")
 fi
 if [[ "${NO_GPU}" == "1" ]]; then
   compose_files+=(-f "${COMPOSE_NOGPU_FILE}")
@@ -260,4 +308,18 @@ SYNC_KASM_PW="${SCRIPT_DIR}/scripts/sync-kasm-web-password.sh"
 if [[ -x "${SYNC_KASM_PW}" ]]; then
   "${SYNC_KASM_PW}" "${CONTAINER_NAME}" "${VNC_PW}" || \
     echo "警告: Kasm Web 密码同步未完成（容器可能仍在启动，稍后在管理台点「启动」重试）。" >&2
+fi
+
+# /usr/local/bin 不在持久化卷内，重建后会清空；每次 up/recreate 后安装 cursor/claude 包装脚本
+INSTALL_WRAPPERS="${SCRIPT_DIR}/scripts/install-container-app-wrappers.sh"
+if [[ -x "${INSTALL_WRAPPERS}" ]]; then
+  for _w in $(seq 1 45); do
+    if docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -q true; then
+      break
+    fi
+    sleep 2
+  done
+  if ! "${INSTALL_WRAPPERS}" "${CONTAINER_NAME}"; then
+    echo "警告: Cursor 包装脚本安装失败（可稍后执行 ${INSTALL_WRAPPERS} ${CONTAINER_NAME}）。" >&2
+  fi
 fi

@@ -129,6 +129,31 @@
       gap: 0.5rem;
     }
     .port-arrow { color: var(--muted); font-size: 0.8rem; }
+    .resource-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    @media (max-width: 520px) { .resource-grid { grid-template-columns: 1fr; } }
+    details.resource-details { margin: 0.5rem 0 0.75rem; }
+    details.resource-details summary {
+      cursor: pointer;
+      color: var(--accent);
+      font-size: 0.875rem;
+      user-select: none;
+    }
+    .progress-bar {
+      height: 8px;
+      background: #121922;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 0.35rem;
+    }
+    .progress-bar > span {
+      display: block;
+      height: 100%;
+      background: var(--accent);
+      border-radius: 4px;
+    }
+    .progress-bar.warn > span { background: var(--danger); }
+    .badge-warn { background: rgba(224,84,84,0.15); color: var(--danger); }
+    .res-cell { font-size: 0.8rem; line-height: 1.45; }
   </style>
 </head>
 <body>
@@ -170,6 +195,29 @@
             <label for="gui_port">HTTPS 端口（可选，留空则自动顺延）</label>
             <input id="gui_port" name="gui_port" type="number" min="1025" max="65535" placeholder="如 6902"/>
           </div>
+          {% set dr = default_resources if default_resources is defined else {'cpus': '2', 'memory': '4g', 'pids_limit': 512, 'disk_quota_gb': 30} %}
+          <details class="resource-details" open>
+            <summary>资源限制（新建实例默认限额）</summary>
+            <div class="resource-grid" style="margin-top:0.5rem;">
+              <div>
+                <label for="res_cpus">CPU（核）</label>
+                <input id="res_cpus" name="res_cpus" type="text" value="{{ dr.cpus or '2' }}" placeholder="如 2 或 0.5"/>
+              </div>
+              <div>
+                <label for="res_memory">内存</label>
+                <input id="res_memory" name="res_memory" type="text" value="{{ dr.memory or '4g' }}" placeholder="如 4g、512m"/>
+              </div>
+              <div>
+                <label for="res_pids_limit">最大进程数</label>
+                <input id="res_pids_limit" name="res_pids_limit" type="number" min="32" max="65535" value="{{ dr.pids_limit or 512 }}"/>
+              </div>
+              <div>
+                <label for="res_disk_quota_gb">磁盘配额（GB，软限制）</label>
+                <input id="res_disk_quota_gb" name="res_disk_quota_gb" type="number" min="0" max="2048" value="{{ dr.disk_quota_gb or 30 }}"/>
+              </div>
+            </div>
+            <p class="hint">留空某项表示不限。磁盘为宿主机目录占用监控，超限将停止容器。修改 CPU/内存/进程数需重建容器。</p>
+          </details>
           <p class="hint">浏览器登录：<strong>kasm_user</strong> 或 <strong>kasm-user</strong> + 本表单密码（<strong>不是</strong>账户名）。若只能看不能点，请断开重连或点「启动」同步权限。</p>
           <p class="hint">自动分配时：VNC 端口 = HTTPS − 1000；SSH 端口 = HTTPS − 4700（与 README 一致）。</p>
           <button type="submit" class="btn-primary">创建并启动</button>
@@ -197,6 +245,7 @@
               <th>容器</th>
               <th>登录</th>
               <th>端口</th>
+              <th>资源</th>
               <th>密码</th>
               <th>快照</th>
               <th>状态</th>
@@ -208,6 +257,45 @@
       </div>
     </div>
     {% endif %}
+  </div>
+
+  <div id="resources-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="resources-modal-title">
+      <h3 id="resources-modal-title">资源限制</h3>
+      <p class="hint" id="resources-modal-sub"></p>
+      <p class="hint">CPU / 内存 / 进程数由 Docker cgroup 强制限制；磁盘为 <code>docker_os</code> 目录占用软限制，超限可自动停容器。保存后将<strong>重建容器</strong>。</p>
+      <div id="resources-live" class="hint" style="margin-bottom:0.75rem;"></div>
+      <div id="resources-disk-bar"></div>
+      <form id="resources-form">
+        <div class="resource-grid">
+          <div>
+            <label for="rm-cpus">CPU（核，留空=不限）</label>
+            <input id="rm-cpus" name="res_cpus" type="text" placeholder="2"/>
+          </div>
+          <div>
+            <label for="rm-memory">内存（留空=不限）</label>
+            <input id="rm-memory" name="res_memory" type="text" placeholder="4g"/>
+          </div>
+          <div>
+            <label for="rm-pids">最大进程数（留空=不限）</label>
+            <input id="rm-pids" name="res_pids_limit" type="number" min="32" max="65535" placeholder="512"/>
+          </div>
+          <div>
+            <label for="rm-disk">磁盘配额 GB（0=不限）</label>
+            <input id="rm-disk" name="res_disk_quota_gb" type="number" min="0" max="2048" placeholder="30"/>
+          </div>
+        </div>
+        <div class="toolbar" style="margin-top:0.75rem;">
+          <button type="submit" class="btn-primary btn-sm">保存并重建</button>
+          <button type="button" class="btn-ghost btn-sm" id="resources-check-disk">检查磁盘</button>
+        </div>
+      </form>
+      <div id="resources-err" class="err"></div>
+      <div id="resources-status" class="hint" style="min-height:1em;margin-top:0.35rem;"></div>
+      <div class="toolbar" style="margin-top:0.75rem;">
+        <button type="button" class="btn-ghost btn-sm" id="resources-modal-close">关闭</button>
+      </div>
+    </div>
   </div>
 
   <div id="ports-modal" class="modal-backdrop" aria-hidden="true">
@@ -275,6 +363,19 @@
       return `<span class="badge ${run ? 'badge-run' : 'badge-stop'}">${status || 'unknown'}</span>`;
     }
 
+    function formatResourcesCell(i) {
+      const r = i.resources || {};
+      const parts = [];
+      parts.push(r.cpus ? `${r.cpus}C` : 'CPU∞');
+      parts.push(r.memory || 'MEM∞');
+      parts.push(r.pids_limit ? `${r.pids_limit}P` : 'P∞');
+      const used = i.disk_usage_gb != null ? i.disk_usage_gb : '—';
+      const quota = r.disk_quota_gb || 0;
+      let diskLine = quota > 0 ? `磁盘 ${used}/${quota}G` : `磁盘 ${used}G`;
+      if (i.disk_over_limit) diskLine += ' ⚠';
+      return `<span class="res-cell">${parts.join(' / ')}<br/>${diskLine}</span>`;
+    }
+
     async function loadList() {
       listErr.textContent = '';
       if (listStatus) { listStatus.textContent = ''; listStatus.className = 'hint'; }
@@ -308,11 +409,13 @@
             ? extra.map(p => `+ ${p.host}→${p.container}/${p.protocol || 'tcp'}`).join('<br/>')
             : '';
           const noState = !reg;
+          const diskBadge = i.disk_over_limit ? '<br/><span class="badge badge-warn">磁盘超限</span>' : '';
           tr.innerHTML = `
             <td>${escapeHtml(i.account_label)}${noState ? '<br/><span style="font-size:0.75rem;color:var(--muted)">未登记</span>' : ''}</td>
             <td><code>${escapeHtml(i.container_name)}</code></td>
             <td>Web <code>kasm_user</code> / <code>kasm-user</code><br/>SSH <code>${sshUser}</code><br/><span style="font-size:0.75rem;color:var(--muted)">Web 无鼠标请重连</span></td>
             <td>Web <code>${gp}</code><br/>VNC <code>${vp}</code><br/>SSH <code>${sp}</code>${extraLines ? '<br/><span style="font-size:0.75rem;color:var(--accent)">' + extraLines + '</span>' : ''}<br/><span style="font-size:0.75rem;color:var(--muted)">${https}<br/>VNC ${vnc}<br/>${ssh}</span></td>
+            <td>${formatResourcesCell(i)}${diskBadge}</td>
             <td>${pwCell}<br/><span style="font-size:0.75rem;color:var(--muted)">口令相同；Web 勿填账户名</span></td>
             <td>${i.snapshot_count || 0}${i.latest_snapshot ? `<br/><span style="font-size:0.75rem;color:var(--muted)">${escapeHtml(i.latest_snapshot.created_at || '')}</span>` : ''}</td>
             <td>${badge(st, miss)}</td>
@@ -320,6 +423,7 @@
               <div class="toolbar">
                 <button type="button" class="btn-primary btn-sm act-start" data-name="${escapeHtml(i.container_name)}" ${miss ? 'disabled' : ''}>启动</button>
                 <button type="button" class="btn-ghost btn-sm act-stop" data-name="${escapeHtml(i.container_name)}" ${miss ? 'disabled' : ''}>停止</button>
+                <button type="button" class="btn-ghost btn-sm act-resources" data-name="${escapeHtml(i.container_name)}" ${noState ? 'disabled' : ''}>资源限制</button>
                 <button type="button" class="btn-ghost btn-sm act-ports" data-name="${escapeHtml(i.container_name)}" ${noState ? 'disabled' : ''}>端口映射</button>
                 <button type="button" class="btn-ghost btn-sm act-recreate" data-name="${escapeHtml(i.container_name)}" ${miss || noState ? 'disabled' : ''}>重建</button>
                 <button type="button" class="btn-ghost btn-sm act-save-snap" data-name="${escapeHtml(i.container_name)}" ${miss || noState ? 'disabled' : ''}>保存快照</button>
@@ -349,6 +453,7 @@
         tbody.querySelectorAll('.act-save-snap').forEach(btn => btn.addEventListener('click', () => doSaveSnapshot(btn)));
         tbody.querySelectorAll('.act-load-snap').forEach(btn => btn.addEventListener('click', () => doLoadSnapshot(btn.dataset.name)));
         tbody.querySelectorAll('.act-delete').forEach(btn => btn.addEventListener('click', () => doDelete(btn.dataset.name)));
+        tbody.querySelectorAll('.act-resources').forEach(btn => btn.addEventListener('click', () => openResourcesModal(btn.dataset.name)));
         tbody.querySelectorAll('.act-ports').forEach(btn => btn.addEventListener('click', () => openPortsModal(btn.dataset.name)));
       } catch (e) {
         listErr.textContent = e.message || String(e);
@@ -456,6 +561,141 @@
     }
 
     let portsModalContainer = '';
+    let resourcesModalContainer = '';
+
+    function closeResourcesModal() {
+      const el = document.getElementById('resources-modal');
+      if (el) { el.classList.remove('open'); el.setAttribute('aria-hidden', 'true'); }
+      resourcesModalContainer = '';
+    }
+
+    function renderDiskBar(usedGb, quotaGb) {
+      const barEl = document.getElementById('resources-disk-bar');
+      if (!barEl) return;
+      if (!quotaGb || quotaGb <= 0) {
+        barEl.innerHTML = `<p class="hint">磁盘：已用 ${usedGb != null ? usedGb : '—'} GB（未设配额）</p>`;
+        return;
+      }
+      const pct = Math.min(100, Math.round((usedGb / quotaGb) * 100));
+      const warn = usedGb >= quotaGb;
+      barEl.innerHTML = `
+        <p class="hint">磁盘：${usedGb} / ${quotaGb} GB (${pct}%)</p>
+        <div class="progress-bar${warn ? ' warn' : ''}"><span style="width:${pct}%"></span></div>`;
+    }
+
+    async function refreshResourcesModal() {
+      const errEl = document.getElementById('resources-err');
+      const statusEl = document.getElementById('resources-status');
+      const liveEl = document.getElementById('resources-live');
+      if (!resourcesModalContainer) return;
+      errEl.textContent = '';
+      statusEl.textContent = '';
+      try {
+        const data = await fetchJSON(`/api/instances/${encodeURIComponent(resourcesModalContainer)}/resources`);
+        const c = data.configured || {};
+        document.getElementById('rm-cpus').value = c.cpus || '';
+        document.getElementById('rm-memory').value = c.memory || '';
+        document.getElementById('rm-pids').value = c.pids_limit || '';
+        document.getElementById('rm-disk').value = c.disk_quota_gb != null ? c.disk_quota_gb : '';
+        const live = data.live || {};
+        const liveParts = [];
+        if (live.cpus != null) liveParts.push(`CPU ${live.cpus}`);
+        if (live.memory) liveParts.push(`MEM ${live.memory}`);
+        if (live.pids_limit) liveParts.push(`PIDS ${live.pids_limit}`);
+        liveEl.textContent = liveParts.length
+          ? 'Docker 当前：' + liveParts.join(' · ')
+          : 'Docker 当前：未检测到 cgroup 限制（可能尚未重建）';
+        renderDiskBar(data.disk_usage_gb, c.disk_quota_gb);
+        const diskOver = c.disk_quota_gb > 0 && data.disk_usage_gb >= c.disk_quota_gb;
+        if (diskOver) {
+          statusEl.className = 'err';
+          statusEl.textContent = '磁盘已超限' + (data.disk_status?.stopped ? '，容器已停止' : '');
+        }
+      } catch (e) {
+        errEl.textContent = e.message || String(e);
+      }
+    }
+
+    async function openResourcesModal(name) {
+      resourcesModalContainer = name;
+      const sub = document.getElementById('resources-modal-sub');
+      if (sub) sub.textContent = `容器 ${name}`;
+      document.getElementById('resources-modal')?.classList.add('open');
+      document.getElementById('resources-modal')?.setAttribute('aria-hidden', 'false');
+      await refreshResourcesModal();
+    }
+
+    document.getElementById('resources-modal-close')?.addEventListener('click', closeResourcesModal);
+    document.getElementById('resources-modal')?.addEventListener('click', (ev) => {
+      if (ev.target.id === 'resources-modal') closeResourcesModal();
+    });
+
+    document.getElementById('resources-check-disk')?.addEventListener('click', async () => {
+      if (!resourcesModalContainer) return;
+      const errEl = document.getElementById('resources-err');
+      const statusEl = document.getElementById('resources-status');
+      errEl.textContent = '';
+      try {
+        statusEl.className = 'hint';
+        statusEl.textContent = '正在检查磁盘…';
+        const data = await fetchJSON(
+          `/api/instances/${encodeURIComponent(resourcesModalContainer)}/resources/check-disk?stop=true`,
+          { method: 'POST' }
+        );
+        await refreshResourcesModal();
+        await loadList();
+        statusEl.className = data.disk_status?.over_limit ? 'err' : 'ok-msg';
+        statusEl.textContent = data.disk_status?.over_limit
+          ? `磁盘超限（${data.disk_status.used_gb}/${data.disk_status.quota_gb} GB）` +
+            (data.disk_status.stopped ? '，容器已停止' : '')
+          : `磁盘正常（${data.disk_status?.used_gb ?? data.disk_usage_gb} GB）`;
+      } catch (e) {
+        errEl.textContent = e.message || String(e);
+        statusEl.textContent = '';
+      }
+    });
+
+    const resourcesForm = document.getElementById('resources-form');
+    if (resourcesForm) {
+      resourcesForm.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        if (!resourcesModalContainer) return;
+        if (!confirm('保存资源限制？若修改了 CPU/内存/进程数将重建容器（短暂中断）；仅改磁盘配额则不会重建。')) return;
+        const errEl = document.getElementById('resources-err');
+        const statusEl = document.getElementById('resources-status');
+        const submitBtn = resourcesForm.querySelector('button[type="submit"]');
+        errEl.textContent = '';
+        const fd = new FormData(resourcesForm);
+        const btnLabel = submitBtn ? submitBtn.textContent : '';
+        if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '保存中…'; }
+        try {
+          statusEl.className = 'hint';
+          statusEl.textContent = '正在保存…（重建容器可能需要 1–3 分钟，请勿关闭页面）';
+          const data = await fetchJSON(`/api/instances/${encodeURIComponent(resourcesModalContainer)}/resources`, {
+            method: 'POST',
+            body: fd,
+          });
+          await refreshResourcesModal();
+          await loadList();
+          const msgs = [];
+          if (data.recreate_skipped) msgs.push('磁盘配额已更新（未重建容器）');
+          if (data.recreate_ok === false) msgs.push('配置已保存，但容器重建未成功，请点「重建」');
+          if (data.warnings && data.warnings.length) msgs.push(...data.warnings);
+          if (msgs.length) {
+            statusEl.className = data.recreate_ok === false ? 'hint' : 'ok-msg';
+            statusEl.textContent = msgs.join('\n');
+          } else {
+            statusEl.className = 'ok-msg';
+            statusEl.textContent = '资源限制已保存并应用。';
+          }
+        } catch (e) {
+          errEl.textContent = e.message || String(e);
+          statusEl.textContent = '';
+        } finally {
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = btnLabel; }
+        }
+      });
+    }
 
     function closePortsModal() {
       const el = document.getElementById('ports-modal');
