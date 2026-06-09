@@ -23,7 +23,7 @@ EOF
 
 patch_bashrc_file() {
   local f="$1"
-  local tmp body tail
+  local tmp body
   tmp="$(mktemp)"
   if grep -q "${MARK_BEGIN}" "$f" 2>/dev/null; then
     body="$(awk -v begin="${MARK_BEGIN}" -v end="${MARK_END}" '
@@ -31,17 +31,12 @@ patch_bashrc_file() {
       $0 ~ end { skip=0; next }
       !skip { print }
     ' "$f")"
-    tail="$(awk -v end="${MARK_END}" 'found{print} $0 ~ end {found=1}' "$f")"
   else
     body="$(cat "$f")"
-    tail=""
   fi
   {
     cat "${SNIPPET}"
     echo "${body}"
-    if [[ -n "${tail}" ]]; then
-      echo "${tail}"
-    fi
   } >"${tmp}"
   mv "${tmp}" "$f"
 }
