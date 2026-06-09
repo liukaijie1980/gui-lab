@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# GitHub Desktop 启动脚本（无 FUSE 容器：--appimage-extract-and-run + --no-sandbox）
+set -euo pipefail
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME}/.local/bin:${PATH:-}"
+
+ulimit -n 65536 2>/dev/null || ulimit -n 8192 2>/dev/null || ulimit -n 4096 2>/dev/null || true
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+warn_thread_pressure() {
+  local threads max
+  threads="$(ps -eLf 2>/dev/null | wc -l | tr -d ' ')"
+  max="$(cat /sys/fs/cgroup/pids.max 2>/dev/null || cat /sys/fs/cgroup/pids/pids.max 2>/dev/null || echo 1024)"
+  if [[ "${threads:-0}" -ge $((max - 80)) ]]; then
+    echo "警告: 容器线程数 ${threads}/${max} 接近上限，请先关闭 Chrome/Cursor 等大型程序后再启动 GitHub Desktop。" >&2
+  fi
+}
+
+setup_dbus() {
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    if command -v dbus-launch >/dev/null 2>&1; then
+      eval "$(dbus-launch --sh-syntax 2>/dev/null || true)"
+    fi
+  fi
+}
+
+setup_keyring() {
+  if ! command -v gnome-keyring-daemon >/dev/null 2>&1; then
+    echo "警告: 未安装 gnome-keyring-daemon，OAuth 登录可能无法保存。请联系管理员安装 gnome-keyring。" >&2
+    return 0
+  fi
+  eval "$(gnome-keyring-daemon --start --components=secrets 2>/dev/null)" || true
+}
+
+setup_git() {
+  if [[ -x /usr/bin/git ]]; then
+    export LOCAL_GIT_DIRECTORY=/usr
+    export GIT_EXEC_PATH="$(/usr/bin/git --exec-path 2>/dev/null || echo /usr/lib/git-core)"
+  fi
+}
+
+find_appimage() {
+  shopt -s nullglob
+  local imgs=("$DIR"/GitHubDesktop-linux-x86_64-*.AppImage "$DIR"/GitHubDesktop-linux-x86_64-*.AppImage.bin)
+  shopt -u nullglob
+  if [[ ${#imgs[@]} -eq 0 ]]; then
+    return 1
+  fi
+  ls -1t "${imgs[@]}" 2>/dev/null | head -1
+}
+
+export BROWSER="${BROWSER:-/home/kasm-user/.local/bin/google-chrome-with-proxy}"
+if [[ ! -x "$BROWSER" ]]; then
+  export BROWSER="/usr/bin/google-chrome"
+fi
+
+warn_thread_pressure
+setup_dbus
+setup_keyring
+setup_git
+
+APPIMAGE="$(find_appimage)" || {
+  echo "未找到 GitHub Desktop AppImage，请将 GitHubDesktop-linux-x86_64-*.AppImage 放到: $DIR" >&2
+  exit 1
+}
+chmod +x "$APPIMAGE"
+
+if command -v prlimit >/dev/null 2>&1; then
+  exec prlimit --nofile=65536:65536 "$APPIMAGE" --appimage-extract-and-run --no-sandbox --disable-dev-shm-usage "$@"
+fi
+exec "$APPIMAGE" --appimage-extract-and-run --no-sandbox --disable-dev-shm-usage "$@"
