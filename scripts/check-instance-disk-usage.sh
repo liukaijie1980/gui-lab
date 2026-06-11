@@ -44,17 +44,26 @@ _dir_bytes() {
     echo 0
     return
   fi
-  # du 遇 Permission denied 时 exit!=0，勿用 || echo 0 以免把用量与 0 拼成两行
+  # --block-size=1：实际磁盘块占用，与 du -sh 一致；遇 Permission denied 时 exit!=0 但仍有部分输出
   local n
-  n="$(du -sb "${d}" 2>/dev/null | awk 'NR==1{print $1; exit}')"
+  n="$(du -s --block-size=1 "${d}" 2>/dev/null | awk 'NR==1{print $1; exit}')"
   echo "${n:-0}"
 }
 
 HOME_DIR="${ROOT}/docker_os/${CONTAINER_NAME}/home"
 PERSIST_DIR="${ROOT}/docker_os/${CONTAINER_NAME}/persist"
-home_b="$(_dir_bytes "${HOME_DIR}")"
-persist_b="$(_dir_bytes "${PERSIST_DIR}")"
-total_b=$((home_b + persist_b))
+total_b=0
+if command -v docker >/dev/null 2>&1 \
+  && docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -qx true; then
+  # du 遇不可读子目录时 exit!=0；勿在 pipefail 下直接接管道，以免丢弃已有统计
+  docker_du_out="$(docker exec "${CONTAINER_NAME}" du -s --block-size=1 /home/kasm-user /persist 2>/dev/null || true)"
+  total_b="$(printf '%s\n' "${docker_du_out}" | awk '{s+=$1} END {print s+0}')"
+fi
+if [[ -z "${total_b}" || "${total_b}" -eq 0 ]]; then
+  home_b="$(_dir_bytes "${HOME_DIR}")"
+  persist_b="$(_dir_bytes "${PERSIST_DIR}")"
+  total_b=$((home_b + persist_b))
+fi
 used_gb=$(awk "BEGIN {printf \"%.3f\", ${total_b} / 1073741824}")
 
 over_limit=false

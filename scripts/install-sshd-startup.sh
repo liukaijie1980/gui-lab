@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
-# 在运行中的容器内安装 sshd 自启动（镜像未重建时）
+# 确保容器内 sshd 已运行。custom_startup 由 run-ubuntu22-gui.sh 挂载 scripts/container-custom-startup.sh，此处仅补启。
 set -euo pipefail
 for c in "$@"; do
-  docker exec -u root "$c" bash -c 'cat >/dockerstartup/custom_startup.sh <<"EOF"
-#!/usr/bin/env bash
-set -euo pipefail
-if command -v sshd >/dev/null 2>&1; then
-  sudo mkdir -p /var/run/sshd
-  sudo chmod 0755 /var/run/sshd
-  if ! pgrep -x sshd >/dev/null 2>&1; then
-    sudo /usr/sbin/sshd
-  fi
-fi
-exec sleep infinity
-EOF
-chmod 0755 /dockerstartup/custom_startup.sh
-pgrep -x sshd >/dev/null || /usr/sbin/sshd'
+  docker exec -u root "$c" bash -lc '
+    set -euo pipefail
+    if ! command -v sshd >/dev/null 2>&1; then
+      exit 0
+    fi
+    mkdir -p /var/run/sshd
+    chmod 0755 /var/run/sshd
+    if ! pgrep -x sshd >/dev/null 2>&1; then
+      /usr/sbin/sshd
+    fi
+  '
   echo "sshd startup: $c"
 done

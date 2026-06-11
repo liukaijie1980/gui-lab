@@ -267,24 +267,70 @@ def docker_run_args_for_resources(res: dict[str, Any]) -> list[str]:
     return args
 
 
+def _sum_du_stdout(stdout: str) -> int:
+    """解析 du -s --block-size=1 输出（可多行，每行一个路径）。"""
+    total = 0
+    for line in (stdout or "").strip().splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        try:
+            total += int(parts[0])
+        except ValueError:
+            continue
+    return total
+
+
+def _host_dir_bytes(path: Path) -> int:
+    """宿主机 bind mount 目录的实际磁盘占用（块大小，与 du -sh 一致）。"""
+    if not path.is_dir():
+        return 0
+    proc = subprocess.run(
+        ["du", "-s", "--block-size=1", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    # du 遇 Permission denied 时可能 exit!=0，但仍会输出已遍历部分的字节数
+    return _sum_du_stdout(proc.stdout)
+
+
+def _docker_du_bytes(container_name: str) -> Optional[int]:
+    """容器运行时以 root 在挂载点内 du，避免宿主机上跨 UID 权限导致漏计。"""
+    proc = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0 or proc.stdout.strip() != "true":
+        return None
+    proc = subprocess.run(
+        [
+            "docker",
+            "exec",
+            container_name,
+            "du",
+            "-s",
+            "--block-size=1",
+            "/home/kasm-user",
+            "/persist",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    total = _sum_du_stdout(proc.stdout)
+    return total if total > 0 else None
+
+
 def disk_usage_bytes(container_name: str) -> int:
+    in_container = _docker_du_bytes(container_name)
+    if in_container is not None:
+        return in_container
     total = 0
     for sub in ("home", "persist"):
-        d = ROOT / "docker_os" / container_name / sub
-        if not d.is_dir():
-            continue
-        proc = subprocess.run(
-            ["du", "-sb", str(d)],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        line = (proc.stdout or "").strip().split("\n")[0].strip()
-        if line:
-            try:
-                total += int(line.split()[0])
-            except (IndexError, ValueError):
-                pass
+        total += _host_dir_bytes(ROOT / "docker_os" / container_name / sub)
     return total
 
 
@@ -599,7 +645,24 @@ def merge_instance_for_display(state_inst: dict[str, Any], docker_row: Optional[
     else:
         m.setdefault("extra_ports_live", [])
     m["extra_ports"] = normalize_extra_ports(m.get("extra_ports"))
+    configured = m["extra_ports"]
+    live = m.get("extra_ports_live") or []
+    if docker_row:
+        m["extra_ports_in_sync"] = configured == live
+        if configured != live:
+            m["ports_drift"] = {"configured": configured, "live": live}
+    else:
+        m["extra_ports_in_sync"] = None
     return m
+
+
+def recreate_instance_from_state(inst: dict[str, Any]) -> tuple[int, str, str]:
+    env = script_env_for_instance(inst)
+    if not env.get("VNC_PW"):
+        raise HTTPException(status_code=400, detail="状态中无密码，无法重建")
+    if len(env["VNC_PW"]) < 6:
+        raise HTTPException(status_code=400, detail="状态中的密码少于 6 位，请先更新密码后再重建")
+    return run_script(env, recreate=True)
 
 
 def instance_from_docker_only(name: str, docker_row: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -668,6 +731,53 @@ def ensure_desktop_shortcuts(container_name: str, *, timeout: int = 180) -> None
         )
 
 
+def ensure_kasmvnc_blacklist_disabled(container_name: str) -> None:
+    """KasmVNC 读取 ~/.vnc/kasmvnc.yaml；确保关闭输错密码后的 IP 黑名单。"""
+    proc = subprocess.run(
+        [
+            "docker",
+            "exec",
+            container_name,
+            "bash",
+            "-lc",
+            r"""
+set -euo pipefail
+f=/home/kasm-user/.vnc/kasmvnc.yaml
+mkdir -p /home/kasm-user/.vnc
+if grep -qE 'blacklist_threshold:[[:space:]]*0' "$f" 2>/dev/null; then
+  exit 0
+fi
+if [[ -f "$f" ]] && grep -q 'blacklist_threshold:' "$f"; then
+  sed -i 's/blacklist_threshold:.*/    blacklist_threshold: 0/' "$f"
+else
+  cat >>"$f" <<'EOF'
+security:
+  brute_force_protection:
+    blacklist_threshold: 0
+EOF
+fi
+chmod 600 "$f" 2>/dev/null || true
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"写入 KasmVNC 黑名单配置失败: {(proc.stderr or proc.stdout).strip()}",
+        )
+
+
+def instance_extra_ports_in_sync(inst: dict[str, Any], docker_row: Optional[dict[str, Any]]) -> bool:
+    if not docker_row:
+        return not normalize_extra_ports(inst.get("extra_ports"))
+    configured = normalize_extra_ports(inst.get("extra_ports"))
+    live = extra_ports_from_docker_inspect(docker_row.get("ports") or {})
+    return configured == live
+
+
 def ensure_sshd_startup(container_name: str) -> None:
     """确保容器内 sshd 已启动，并写入 custom_startup 以便重启后自启。"""
     if not INSTALL_SSHD_STARTUP.is_file():
@@ -698,6 +808,7 @@ def ensure_instance_after_recreate(
     warnings: list[str] = []
     skip = skip_steps or set()
     steps = (
+        ("Kasm 黑名单配置", "kasm_blacklist", lambda: ensure_kasmvnc_blacklist_disabled(container_name)),
         ("Kasm Web 密码", "kasm_pw", lambda: ensure_kasm_user_password(container_name, password)),
         ("Linux 密码", "linux_pw", lambda: ensure_kasm_linux_password(container_name, password)),
         ("SSH shell", "ssh_shell", lambda: ensure_ssh_interactive_shell(container_name)),
@@ -825,6 +936,10 @@ def admin_instance(inst: dict[str, Any]) -> dict[str, Any]:
     x["extra_ports"] = normalize_extra_ports(x.get("extra_ports"))
     if "extra_ports_live" not in x:
         x["extra_ports_live"] = []
+    if "extra_ports_in_sync" not in x:
+        configured = x["extra_ports"]
+        live = x.get("extra_ports_live") or []
+        x["extra_ports_in_sync"] = (configured == live) if live or configured else None
     res = normalize_resources(x.get("resources"), apply_defaults=False)
     x["resources"] = res
     x["disk_usage_gb"] = disk_usage_gb(x["container_name"])
@@ -901,11 +1016,18 @@ def api_list(request: Request):
             merged = instance_from_docker_only(name, row)
         pub = admin_instance(merged)
         out.append({**pub, "docker": row, "registered": st is not None})
+    drift = [
+        x["container_name"]
+        for x in out
+        if x.get("registered") and x.get("extra_ports_in_sync") is False
+    ]
     return {
         "instances": out,
         "script_exists": SCRIPT.is_file(),
         "root": str(ROOT),
         "default_resources": default_resources(state),
+        "ports_drift": drift,
+        "ports_drift_count": len(drift),
     }
 
 
@@ -1198,6 +1320,18 @@ def api_start(request: Request, container_name: str):
             raise HTTPException(status_code=404, detail="容器不存在")
     else:
         _docker_ok()
+    inst = next((x for x in state.get("instances", []) if x["container_name"] == container_name), None)
+    docker_row = docker_inspect_container(container_name)
+    if inst and not instance_extra_ports_in_sync(inst, docker_row):
+        env = script_env_for_instance(inst)
+        if not env.get("VNC_PW"):
+            raise HTTPException(status_code=400, detail="状态中无密码，无法应用端口映射")
+        code, out, err = run_script(env, recreate=True)
+        if code != 0:
+            raise HTTPException(status_code=500, detail=f"启动失败（需重建以同步端口）: {err or out}")
+        install_container_app_wrappers(container_name)
+        ensure_instance_after_recreate(container_name, env["VNC_PW"], strict=False)
+        return {"ok": True, "recreated": True, "log": (out + err)[-4000:]}
     proc = subprocess.run(
         ["docker", "start", container_name],
         capture_output=True,
@@ -1209,7 +1343,6 @@ def api_start(request: Request, container_name: str):
             status_code=404,
             detail=f"容器不存在或无法启动: {(proc.stderr or proc.stdout).strip()}",
         )
-    inst = next((x for x in state.get("instances", []) if x["container_name"] == container_name), None)
     if inst and inst.get("vnc_pw"):
         install_container_app_wrappers(container_name)
         ensure_instance_after_recreate(container_name, inst["vnc_pw"], strict=False)
@@ -1226,16 +1359,10 @@ def api_recreate(request: Request, container_name: str):
         raise HTTPException(status_code=404, detail="未知实例")
 
     ssh_p = inst.get("ssh_port") or gui_to_ssh(int(inst["gui_port"]))
-    env = script_env_for_instance(inst)
-    if not env["VNC_PW"]:
-        raise HTTPException(status_code=400, detail="状态中无密码，无法重建；请删除后重新创建")
-    if len(env["VNC_PW"]) < 6:
-        raise HTTPException(status_code=400, detail="状态中的密码少于 6 位，请先更新密码后再重建")
-
-    code, out, err = run_script(env, recreate=True)
+    code, out, err = recreate_instance_from_state(inst)
     if code != 0:
         raise HTTPException(status_code=500, detail=f"重建失败: {err or out}")
-    ensure_instance_after_recreate(container_name, env["VNC_PW"], strict=False)
+    ensure_instance_after_recreate(container_name, inst["vnc_pw"], strict=False)
     inst["ssh_port"] = int(ssh_p)
     inst.setdefault("ssh_login_user", "kasm-user")
     save_state(state)
@@ -1359,6 +1486,26 @@ def api_snapshot_load_latest(request: Request, container_name: str):
     if inst.get("vnc_pw"):
         ensure_kasm_user_password(container_name, inst["vnc_pw"])
     return {"ok": True, "snapshot": latest}
+
+
+@app.post("/api/instances/{container_name}/ports/sync")
+def api_sync_ports(request: Request, container_name: str):
+    """将 instances.json 中登记的 extra_ports 应用到 docker（不一致时 RECREATE=1 重建）。"""
+    check_session(request)
+    state = load_state()
+    inst = _instance_or_404(state, container_name)
+    _docker_ok()
+    row = docker_inspect_container(container_name)
+    if row is None:
+        raise HTTPException(status_code=404, detail="容器不存在")
+    if instance_extra_ports_in_sync(inst, row):
+        return {"ok": True, "recreated": False, "message": "额外端口已与登记一致，无需重建"}
+    code, out, err = recreate_instance_from_state(inst)
+    if code != 0:
+        raise HTTPException(status_code=500, detail=f"应用端口映射失败: {err or out}")
+    ensure_instance_after_recreate(container_name, inst["vnc_pw"], strict=False)
+    install_container_app_wrappers(container_name)
+    return {"ok": True, "recreated": True, "log": (out + err)[-4000:]}
 
 
 @app.get("/api/instances/{container_name}/ports")

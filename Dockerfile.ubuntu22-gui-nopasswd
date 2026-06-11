@@ -25,26 +25,18 @@ RUN set -eux; \
     sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config; \
     sed -i 's/^#\\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config; \
     sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
-    install -d -m 0755 -o 1000 -g 1000 /home/kasm-user/.config/kasmvnc; \
+    install -d -m 0755 -o 1000 -g 1000 /home/kasm-user/.vnc; \
     printf '%s\n' \
+      'logging:' \
+      '  log_writer_name: all' \
+      '  log_dest: logfile' \
+      '  level: 100' \
       'security:' \
       '  brute_force_protection:' \
       '    blacklist_threshold: 0' \
-      >/home/kasm-user/.config/kasmvnc/kasmvnc.yaml; \
-    chown 1000:1000 /home/kasm-user/.config/kasmvnc/kasmvnc.yaml; \
-    printf '%s\n' \
-      '#!/usr/bin/env bash' \
-      'set -euo pipefail' \
-      'if command -v sshd >/dev/null 2>&1; then' \
-      '  sudo mkdir -p /var/run/sshd' \
-      '  sudo chmod 0755 /var/run/sshd' \
-      '  if ! pgrep -x sshd >/dev/null 2>&1; then' \
-      '    sudo /usr/sbin/sshd' \
-      '  fi' \
-      'fi' \
-      'exec sleep infinity' \
-      >/dockerstartup/custom_startup.sh; \
-    chmod 0755 /dockerstartup/custom_startup.sh; \
+      >/home/kasm-user/.vnc/kasmvnc.yaml; \
+    chown 1000:1000 /home/kasm-user/.vnc/kasmvnc.yaml; \
+    chmod 755 /dockerstartup; \
     sed -i '/kasmvncpasswd -u kasm_viewer -r/a echo -e "${VNC_PW}\\n${VNC_PW}\\n" | kasmvncpasswd -u kasm-user -r' /dockerstartup/vnc_startup.sh
 
 USER 1000

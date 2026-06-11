@@ -5,8 +5,9 @@
 # 功能概要：
 #   - 可选加载本机代理（proxy.sh），并把 localhost/127.0.0.1 映射为 host.docker.internal，
 #     避免容器内代理指向错误地址。
-#   - 写入 .env.ubuntu22-gui，保证 HOME 挂载目录属主为 Kasm 用户 (1000:1000)，并可选写入
-#     KasmVNC 配置（关闭多次输错密码后的 IP 黑名单）。
+#   - 写入 docker_os/<容器名>/.env（每实例独立；并更新根目录 .env.ubuntu22-gui 为最近一次快照），
+#     保证 HOME 挂载目录属主为 Kasm 用户 (1000:1000)，并可选写入 KasmVNC 配置（关闭多次输错密码后的 IP 黑名单）。
+#   - 挂载 scripts/container-custom-startup.sh 为 /dockerstartup/custom_startup.sh（sshd + 密码自同步）。
 #   - 用 docker compose 拉起服务；若容器已存在默认不强制重建（需改端口/密码等时设 RECREATE=1）。
 #
 # 常用环境变量（均可选，有默认值）：
@@ -20,9 +21,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${SCRIPT_DIR}/.env.ubuntu22-gui"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.ubuntu22-gui.yml"
 COMPOSE_NOGPU_FILE="${SCRIPT_DIR}/docker-compose.ubuntu22-gui.nogpu.yml"
+LEGACY_ENV_FILE="${SCRIPT_DIR}/.env.ubuntu22-gui"
+CUSTOM_STARTUP_SCRIPT="${SCRIPT_DIR}/scripts/container-custom-startup.sh"
 RECREATE="${RECREATE:-0}"
 NO_GPU="${NO_GPU:-0}"
 
@@ -85,6 +87,10 @@ CONTAINER_NAME="${CONTAINER_NAME:-${1:-ubuntu22-gui}}"
 # 始终按容器名推导家目录，避免 shell 里残留的 HOME_DIR 导致多实例挂错目录
 HOME_DIR="./docker_os/${CONTAINER_NAME}/home"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-${CONTAINER_NAME}}"
+INSTANCE_DIR="${SCRIPT_DIR}/docker_os/${CONTAINER_NAME}"
+ENV_FILE="${INSTANCE_DIR}/.env"
+
+mkdir -p "${INSTANCE_DIR}"
 
 # Kasm 镜像内桌面用户为 kasm-user（UID/GID 1000）。若挂载目录由 Docker 自动创建，常为 root 属主，
 # 会导致启动脚本无法向 /home/kasm-user 复制 profile，容器进入重启循环。
@@ -134,28 +140,42 @@ ensure_kasm_mount_dirs() {
     fi
   fi
 
-  # 持久化家目录会覆盖镜像内默认配置；KasmVNC 多次输错密码会拉黑客户端 IP，写入 blacklist_threshold:0 关闭该行为。
-  local kcfg="${home_abs}/.config/kasmvnc/kasmvnc.yaml"
-  if [[ ! -f "${kcfg}" ]]; then
+  # KasmVNC 实际读取 ~/.vnc/kasmvnc.yaml（非 ~/.config/kasmvnc/）；多次输错密码会拉黑客户端 IP。
+  local kcfg="${home_abs}/.vnc/kasmvnc.yaml"
+  if ! grep -qE 'blacklist_threshold:[[:space:]]*0' "${kcfg}" 2>/dev/null; then
+    local _write_kasm_cfg=0
     if [[ "$(id -u)" -eq 1000 ]] && [[ "$(id -g)" -eq 1000 ]]; then
-      mkdir -p "${home_abs}/.config/kasmvnc"
-      tee "${kcfg}" >/dev/null <<'EOF'
-security:
-  brute_force_protection:
-    blacklist_threshold: 0
-EOF
-      echo "已写入 KasmVNC 配置（关闭多次输错密码后的客户端 IP 黑名单）: ${kcfg}"
+      _write_kasm_cfg=1
+      mkdir -p "${home_abs}/.vnc"
     elif command -v sudo >/dev/null 2>&1; then
-      _sudo mkdir -p "${home_abs}/.config/kasmvnc"
-      _sudo tee "${kcfg}" >/dev/null <<'EOF'
-security:
-  brute_force_protection:
-    blacklist_threshold: 0
-EOF
-      _sudo chown -R 1000:1000 "${home_abs}/.config"
-      echo "已写入 KasmVNC 配置（关闭多次输错密码后的客户端 IP 黑名单）: ${kcfg}"
+      _write_kasm_cfg=2
+      _sudo mkdir -p "${home_abs}/.vnc"
     else
       echo "警告: 未安装 sudo，跳过写入 ${kcfg}；多次输错 Web 密码后若无法连接，请见 README「登录与黑名单」。" >&2
+    fi
+    if [[ "${_write_kasm_cfg}" -eq 1 ]]; then
+      if [[ -f "${kcfg}" ]] && grep -q 'blacklist_threshold:' "${kcfg}"; then
+        sed -i 's/blacklist_threshold:.*/    blacklist_threshold: 0/' "${kcfg}"
+      else
+        tee -a "${kcfg}" >/dev/null <<'EOF'
+security:
+  brute_force_protection:
+    blacklist_threshold: 0
+EOF
+      fi
+      echo "已写入 KasmVNC 配置（关闭多次输错密码后的客户端 IP 黑名单）: ${kcfg}"
+    elif [[ "${_write_kasm_cfg}" -eq 2 ]]; then
+      if [[ -f "${kcfg}" ]] && grep -q 'blacklist_threshold:' "${kcfg}"; then
+        _sudo sed -i 's/blacklist_threshold:.*/    blacklist_threshold: 0/' "${kcfg}"
+      else
+        _sudo tee -a "${kcfg}" >/dev/null <<'EOF'
+security:
+  brute_force_protection:
+    blacklist_threshold: 0
+EOF
+      fi
+      _sudo chown -R 1000:1000 "${home_abs}/.vnc"
+      echo "已写入 KasmVNC 配置（关闭多次输错密码后的客户端 IP 黑名单）: ${kcfg}"
     fi
   fi
 }
@@ -163,15 +183,18 @@ EOF
 ensure_kasm_mount_dirs
 
 # ---------------------------------------------------------------------------
-# 写出 compose --env-file；小写/大写代理变量都写一份，兼容不同引用方式
+# 写出 compose --env-file（每实例 docker_os/<容器名>/.env）；小写/大写代理变量都写一份
 # ---------------------------------------------------------------------------
-cat > "${ENV_FILE}" <<EOF
+EXTRA_PORTS="${EXTRA_PORTS:-}"
+{
+  cat <<EOF
 GUI_PORT=${GUI_PORT}
 VNC_NATIVE_PORT=${VNC_NATIVE_PORT}
 SSH_PORT=${SSH_PORT}
 VNC_PW=${VNC_PW}
 CONTAINER_NAME=${CONTAINER_NAME}
 HOME_DIR=${HOME_DIR}
+COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
 CPU_LIMIT=${CPU_LIMIT:-}
 MEM_LIMIT=${MEM_LIMIT:-}
 MEMSWAP_LIMIT=${MEMSWAP_LIMIT:-}
@@ -185,6 +208,15 @@ https_proxy=${HTTPS_PROXY_MAPPED}
 all_proxy=${ALL_PROXY_MAPPED}
 no_proxy=${RAW_NO_PROXY}
 EOF
+  if [[ -n "${EXTRA_PORTS}" ]]; then
+    echo "EXTRA_PORTS=${EXTRA_PORTS}"
+  fi
+} > "${ENV_FILE}"
+
+{
+  echo "# 最近启动实例 ${CONTAINER_NAME} 的快照；权威配置见 docker_os/${CONTAINER_NAME}/.env"
+  cat "${ENV_FILE}"
+} > "${LEGACY_ENV_FILE}"
 
 # docker compose 展开 compose 里的 ${HTTP_PROXY}、${http_proxy} 等时，会优先使用**当前 shell 已导出**的变量；
 # 本脚本前面 source 过 proxy.sh，其中多为 localhost/127.0.0.1，会覆盖 --env-file 里的映射值，导致容器内代理仍指向 localhost。
@@ -194,7 +226,7 @@ set -a
 source "${ENV_FILE}"
 set +a
 
-echo "已生成 ${ENV_FILE}"
+echo "已生成 ${ENV_FILE}（并更新 ${LEGACY_ENV_FILE} 快照）"
 _extra_summary=""
 if [[ -n "${EXTRA_PORTS:-}" ]]; then
   _extra_summary="，额外端口: ${EXTRA_PORTS}"
@@ -204,8 +236,7 @@ echo "将启动 Ubuntu 22.04 图形桌面容器: ${CONTAINER_NAME}（Web: ${GUI_
 # ---------------------------------------------------------------------------
 # 额外端口映射：生成 compose 覆盖（与主 compose 的 ports 列表拼接）
 # ---------------------------------------------------------------------------
-EXTRA_PORTS="${EXTRA_PORTS:-}"
-PORTS_OVERRIDE="${SCRIPT_DIR}/docker_os/${CONTAINER_NAME}/extra-ports.compose.yml"
+PORTS_OVERRIDE="${INSTANCE_DIR}/extra-ports.compose.yml"
 compose_extra=()
 if [[ -n "${EXTRA_PORTS}" ]]; then
   mkdir -p "$(dirname "${PORTS_OVERRIDE}")"
@@ -239,7 +270,7 @@ CPU_LIMIT="${CPU_LIMIT:-}"
 MEM_LIMIT="${MEM_LIMIT:-}"
 MEMSWAP_LIMIT="${MEMSWAP_LIMIT:-}"
 PIDS_LIMIT="${PIDS_LIMIT:-}"
-RESOURCE_OVERRIDE="${SCRIPT_DIR}/docker_os/${CONTAINER_NAME}/resource-limits.compose.yml"
+RESOURCE_OVERRIDE="${INSTANCE_DIR}/resource-limits.compose.yml"
 compose_resource=()
 _has_resource_limit=0
 if [[ -n "${CPU_LIMIT}" || -n "${MEM_LIMIT}" || -n "${PIDS_LIMIT}" ]]; then
@@ -273,6 +304,34 @@ elif [[ -f "${RESOURCE_OVERRIDE}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# custom_startup：挂载宿主机脚本（sshd + VNC_PW 同步），无需重建镜像即可生效
+# ---------------------------------------------------------------------------
+STARTUP_OVERRIDE="${INSTANCE_DIR}/custom-startup.compose.yml"
+compose_startup=()
+if [[ -f "${CUSTOM_STARTUP_SCRIPT}" ]]; then
+  chmod +x "${CUSTOM_STARTUP_SCRIPT}" 2>/dev/null || true
+  _startup_abs="$(cd "${SCRIPT_DIR}" && cd scripts && pwd)/container-custom-startup.sh"
+  {
+    echo "services:"
+    echo "  ubuntu22-gui:"
+    echo "    volumes:"
+    echo "      - ${_startup_abs}:/dockerstartup/custom_startup.sh:ro"
+  } > "${STARTUP_OVERRIDE}"
+  compose_startup+=(-f "${STARTUP_OVERRIDE}")
+  echo "已加载 custom_startup 挂载: ${CUSTOM_STARTUP_SCRIPT}"
+fi
+
+# ---------------------------------------------------------------------------
+# 额外卷挂载：若存在 docker_os/<容器名>/extra-volumes.compose.yml 则自动合并
+# ---------------------------------------------------------------------------
+VOLUMES_OVERRIDE="${INSTANCE_DIR}/extra-volumes.compose.yml"
+compose_volumes=()
+if [[ -f "${VOLUMES_OVERRIDE}" ]]; then
+  compose_volumes+=(-f "${VOLUMES_OVERRIDE}")
+  echo "已加载额外卷配置: ${VOLUMES_OVERRIDE}"
+fi
+
+# ---------------------------------------------------------------------------
 # 拉起容器：已存在时默认不 --force-recreate（避免每次冷启动与重复安装）。
 # 需改端口/环境并重建实例时: RECREATE=1 ./run-ubuntu22-gui.sh
 # 宿主机 NVIDIA 异常时可: NO_GPU=1 RECREATE=1 ./run-ubuntu22-gui.sh
@@ -283,6 +342,12 @@ if [[ ${#compose_extra[@]} -gt 0 ]]; then
 fi
 if [[ ${#compose_resource[@]} -gt 0 ]]; then
   compose_files+=("${compose_resource[@]}")
+fi
+if [[ ${#compose_volumes[@]} -gt 0 ]]; then
+  compose_files+=("${compose_volumes[@]}")
+fi
+if [[ ${#compose_startup[@]} -gt 0 ]]; then
+  compose_files+=("${compose_startup[@]}")
 fi
 if [[ "${NO_GPU}" == "1" ]]; then
   compose_files+=(-f "${COMPOSE_NOGPU_FILE}")

@@ -154,6 +154,17 @@
     .progress-bar.warn > span { background: var(--danger); }
     .badge-warn { background: rgba(224,84,84,0.15); color: var(--danger); }
     .res-cell { font-size: 0.8rem; line-height: 1.45; }
+    .drift-banner {
+      margin: 0.75rem 0 0;
+      padding: 0.65rem 0.85rem;
+      border-radius: 8px;
+      border: 1px solid rgba(224,84,84,0.45);
+      background: rgba(224,84,84,0.08);
+      font-size: 0.85rem;
+    }
+    .drift-banner strong { color: var(--danger); }
+    .drift-banner ul { margin: 0.35rem 0 0.5rem 1.1rem; padding: 0; }
+    .drift-banner li { margin: 0.2rem 0; }
   </style>
 </head>
 <body>
@@ -235,6 +246,7 @@
         <button type="button" class="btn-ghost btn-sm" id="btn-refresh">刷新</button>
       </div>
       <p class="hint" id="meta"></p>
+      <div id="ports-drift-banner" class="drift-banner" style="display:none;"></div>
       <div id="list-err" class="err"></div>
       <div id="list-status" class="hint" style="min-height:1.25em;margin-top:0.25rem;"></div>
       <div style="overflow-x:auto;margin-top:0.5rem;">
@@ -327,8 +339,10 @@
         </div>
       </form>
       <div id="ports-err" class="err"></div>
+      <div id="ports-drift-alert" class="drift-banner" style="display:none;margin-top:0.75rem;"></div>
       <div id="ports-status" class="hint" style="min-height:1em;margin-top:0.35rem;"></div>
       <div class="toolbar" style="margin-top:0.75rem;">
+        <button type="button" class="btn-primary btn-sm" id="ports-sync-btn" style="display:none;">立即应用登记端口</button>
         <button type="button" class="btn-ghost btn-sm" id="ports-modal-close">关闭</button>
       </div>
     </div>
@@ -376,14 +390,63 @@
       return `<span class="res-cell">${parts.join(' / ')}<br/>${diskLine}</span>`;
     }
 
+    function formatPortDrift(i) {
+      const cfg = (i.extra_ports || []).map(p => `${p.host}→${p.container}`).join(', ') || '（无）';
+      const live = (i.extra_ports_live || []).map(p => `${p.host}→${p.container}`).join(', ') || '（无）';
+      return `登记 [${cfg}]，实际 [${live}]`;
+    }
+
+    function renderPortsDriftBanner(data) {
+      const el = document.getElementById('ports-drift-banner');
+      if (!el) return;
+      const drift = (data.instances || []).filter(i => i.registered && i.extra_ports_in_sync === false);
+      if (!drift.length) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+        return;
+      }
+      el.style.display = 'block';
+      const items = drift.map(i =>
+        `<li><code>${escapeHtml(i.container_name)}</code>：${escapeHtml(formatPortDrift(i))}
+          <button type="button" class="btn-danger btn-sm act-sync-ports" data-name="${escapeHtml(i.container_name)}" style="margin-left:0.35rem;">应用端口</button></li>`
+      ).join('');
+      el.innerHTML = `<strong>⚠ 额外端口未同步</strong>（登记与容器实际映射不一致，Web/VNC/SSH 不受影响，但额外端口可能不可用）<ul>${items}</ul>`;
+      el.querySelectorAll('.act-sync-ports').forEach(btn => {
+        btn.addEventListener('click', () => doSyncPorts(btn.dataset.name));
+      });
+    }
+
+    async function doSyncPorts(name) {
+      if (!confirm(`重建容器 ${name} 以应用 instances.json 中登记的额外端口？桌面会短暂中断。`)) return;
+      listErr.textContent = '';
+      if (listStatus) {
+        listStatus.className = 'hint';
+        listStatus.textContent = `正在应用 ${name} 的端口映射…`;
+      }
+      try {
+        const data = await fetchJSON(`/api/instances/${encodeURIComponent(name)}/ports/sync`, { method: 'POST' });
+        if (listStatus) {
+          listStatus.className = 'ok-msg';
+          listStatus.textContent = data.recreated
+            ? `${name}：端口已同步（已重建）`
+            : `${name}：${data.message || '已是最新'}`;
+        }
+        await loadList();
+      } catch (e) {
+        listErr.textContent = e.message || String(e);
+        if (listStatus) listStatus.textContent = '';
+      }
+    }
+
     async function loadList() {
       listErr.textContent = '';
       if (listStatus) { listStatus.textContent = ''; listStatus.className = 'hint'; }
       try {
         const data = await fetchJSON('/api/instances');
         meta.textContent = data.script_exists
-          ? `数据根: ${data.root}`
+          ? `数据根: ${data.root}${data.ports_drift_count ? ` · ${data.ports_drift_count} 个实例额外端口未同步` : ''}`
           : '警告: 未找到 run-ubuntu22-gui.sh，创建会失败';
+        renderPortsDriftBanner(data);
         tbody.innerHTML = '';
         for (const i of data.instances) {
           const d = i.docker;
@@ -408,13 +471,17 @@
           const extraLines = extra.length
             ? extra.map(p => `+ ${p.host}→${p.container}/${p.protocol || 'tcp'}`).join('<br/>')
             : '';
+          const portsDrift = i.registered && i.extra_ports_in_sync === false;
+          const driftBadge = portsDrift
+            ? `<br/><span class="badge badge-warn">额外端口未同步</span>`
+            : '';
           const noState = !reg;
           const diskBadge = i.disk_over_limit ? '<br/><span class="badge badge-warn">磁盘超限</span>' : '';
           tr.innerHTML = `
             <td>${escapeHtml(i.account_label)}${noState ? '<br/><span style="font-size:0.75rem;color:var(--muted)">未登记</span>' : ''}</td>
             <td><code>${escapeHtml(i.container_name)}</code></td>
             <td>Web <code>kasm_user</code> / <code>kasm-user</code><br/>SSH <code>${sshUser}</code><br/><span style="font-size:0.75rem;color:var(--muted)">Web 无鼠标请重连</span></td>
-            <td>Web <code>${gp}</code><br/>VNC <code>${vp}</code><br/>SSH <code>${sp}</code>${extraLines ? '<br/><span style="font-size:0.75rem;color:var(--accent)">' + extraLines + '</span>' : ''}<br/><span style="font-size:0.75rem;color:var(--muted)">${https}<br/>VNC ${vnc}<br/>${ssh}</span></td>
+            <td>Web <code>${gp}</code><br/>VNC <code>${vp}</code><br/>SSH <code>${sp}</code>${extraLines ? '<br/><span style="font-size:0.75rem;color:var(--accent)">' + extraLines + '</span>' : ''}${driftBadge}<br/><span style="font-size:0.75rem;color:var(--muted)">${https}<br/>VNC ${vnc}<br/>${ssh}</span></td>
             <td>${formatResourcesCell(i)}${diskBadge}</td>
             <td>${pwCell}<br/><span style="font-size:0.75rem;color:var(--muted)">口令相同；Web 勿填账户名</span></td>
             <td>${i.snapshot_count || 0}${i.latest_snapshot ? `<br/><span style="font-size:0.75rem;color:var(--muted)">${escapeHtml(i.latest_snapshot.created_at || '')}</span>` : ''}</td>
@@ -425,6 +492,7 @@
                 <button type="button" class="btn-ghost btn-sm act-stop" data-name="${escapeHtml(i.container_name)}" ${miss ? 'disabled' : ''}>停止</button>
                 <button type="button" class="btn-ghost btn-sm act-resources" data-name="${escapeHtml(i.container_name)}" ${noState ? 'disabled' : ''}>资源限制</button>
                 <button type="button" class="btn-ghost btn-sm act-ports" data-name="${escapeHtml(i.container_name)}" ${noState ? 'disabled' : ''}>端口映射</button>
+                ${portsDrift ? `<button type="button" class="btn-danger btn-sm act-sync-ports" data-name="${escapeHtml(i.container_name)}">应用端口</button>` : ''}
                 <button type="button" class="btn-ghost btn-sm act-recreate" data-name="${escapeHtml(i.container_name)}" ${miss || noState ? 'disabled' : ''}>重建</button>
                 <button type="button" class="btn-ghost btn-sm act-save-snap" data-name="${escapeHtml(i.container_name)}" ${miss || noState ? 'disabled' : ''}>保存快照</button>
                 <button type="button" class="btn-ghost btn-sm act-load-snap" data-name="${escapeHtml(i.container_name)}" ${noState ? 'disabled' : ''}>加载最新</button>
@@ -447,6 +515,7 @@
             }
           });
         });
+        tbody.querySelectorAll('.act-sync-ports').forEach(btn => btn.addEventListener('click', () => doSyncPorts(btn.dataset.name)));
         tbody.querySelectorAll('.act-start').forEach(btn => btn.addEventListener('click', () => doAction('start', btn.dataset.name)));
         tbody.querySelectorAll('.act-stop').forEach(btn => btn.addEventListener('click', () => doAction('stop', btn.dataset.name)));
         tbody.querySelectorAll('.act-recreate').forEach(btn => btn.addEventListener('click', () => doRecreate(btn.dataset.name)));
@@ -469,7 +538,11 @@
     async function doAction(kind, name) {
       listErr.textContent = '';
       try {
-        await fetchJSON(`/api/instances/${encodeURIComponent(name)}/${kind}`, { method: 'POST' });
+        const data = await fetchJSON(`/api/instances/${encodeURIComponent(name)}/${kind}`, { method: 'POST' });
+        if (data.recreated && listStatus) {
+          listStatus.className = 'ok-msg';
+          listStatus.textContent = `${name}：启动时已重建以同步额外端口。`;
+        }
         await loadList();
       } catch (e) {
         listErr.textContent = e.message || String(e);
@@ -729,7 +802,21 @@
           });
         }
         if (data.in_sync === false) {
-          statusEl.textContent = '提示：登记配置与容器当前映射不一致，可删除后重新添加或点「重建」同步。';
+          const alertEl = document.getElementById('ports-drift-alert');
+          const syncBtn = document.getElementById('ports-sync-btn');
+          if (alertEl) {
+            alertEl.style.display = 'block';
+            const cfg = (data.configured || []).map(p => `${p.host}→${p.container}`).join(', ') || '（无）';
+            const live = (data.live || []).map(p => `${p.host}→${p.container}`).join(', ') || '（无）';
+            alertEl.innerHTML = `<strong>登记与容器不一致</strong><br/>登记：${escapeHtml(cfg)}<br/>实际：${escapeHtml(live)}<br/>请点击「立即应用登记端口」或「重建」使映射生效。`;
+          }
+          if (syncBtn) syncBtn.style.display = 'inline-block';
+          statusEl.textContent = '';
+        } else {
+          const alertEl = document.getElementById('ports-drift-alert');
+          const syncBtn = document.getElementById('ports-sync-btn');
+          if (alertEl) { alertEl.style.display = 'none'; alertEl.innerHTML = ''; }
+          if (syncBtn) syncBtn.style.display = 'none';
         }
       } catch (e) {
         errEl.textContent = e.message || String(e);
@@ -743,6 +830,10 @@
       document.getElementById('ports-modal')?.classList.add('open');
       document.getElementById('ports-modal')?.setAttribute('aria-hidden', 'false');
       document.getElementById('ports-add-form')?.reset();
+      const alertEl = document.getElementById('ports-drift-alert');
+      const syncBtn = document.getElementById('ports-sync-btn');
+      if (alertEl) { alertEl.style.display = 'none'; alertEl.innerHTML = ''; }
+      if (syncBtn) syncBtn.style.display = 'none';
       await refreshPortsList();
     }
 
@@ -774,6 +865,9 @@
     }
 
     document.getElementById('ports-modal-close')?.addEventListener('click', closePortsModal);
+    document.getElementById('ports-sync-btn')?.addEventListener('click', () => {
+      if (portsModalContainer) doSyncPorts(portsModalContainer);
+    });
     document.getElementById('ports-modal')?.addEventListener('click', (ev) => {
       if (ev.target.id === 'ports-modal') closePortsModal();
     });
