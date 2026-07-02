@@ -203,8 +203,8 @@
             <input id="password" name="password" type="password" required minlength="6" autocomplete="new-password" placeholder="至少 6 位强密码"/>
           </div>
           <div class="row">
-            <label for="gui_port">HTTPS 端口（可选，留空则自动顺延）</label>
-            <input id="gui_port" name="gui_port" type="number" min="1025" max="65535" placeholder="如 6902"/>
+            <label for="gui_port">HTTPS 端口（可选，留空则自动顺延；手动填写须 ≥5724）</label>
+            <input id="gui_port" name="gui_port" type="number" min="5724" max="65535" placeholder="如 6906，留空自动分配"/>
           </div>
           {% set dr = default_resources if default_resources is defined else {'cpus': '2', 'memory': '4g', 'pids_limit': 512, 'disk_quota_gb': 30} %}
           <details class="resource-details" open>
@@ -226,8 +226,16 @@
                 <label for="res_disk_quota_gb">磁盘配额（GB，软限制）</label>
                 <input id="res_disk_quota_gb" name="res_disk_quota_gb" type="number" min="0" max="2048" value="{{ dr.disk_quota_gb or 30 }}"/>
               </div>
+              <div>
+                <label for="res_egress_mbit">上行带宽（Mbps）</label>
+                <input id="res_egress_mbit" name="res_egress_mbit" type="text" step="0.1" value="{{ dr.egress_mbit or '' }}" placeholder="留空=不限，如 0.5"/>
+              </div>
+              <div>
+                <label for="res_ingress_mbit">下行带宽（Mbps）</label>
+                <input id="res_ingress_mbit" name="res_ingress_mbit" type="text" step="0.1" value="{{ dr.ingress_mbit or '' }}" placeholder="留空=不限，如 1.5"/>
+              </div>
             </div>
-            <p class="hint">留空某项表示不限。磁盘为宿主机目录占用监控，超限将停止容器。修改 CPU/内存/进程数需重建容器。</p>
+            <p class="hint">留空某项表示不限。磁盘为宿主机目录占用监控，超限将停止容器。带宽在宿主机 tc 生效，改带宽<strong>不</strong>重建容器；改 CPU/内存/进程数需重建。</p>
           </details>
           <p class="hint">浏览器登录：<strong>kasm_user</strong> 或 <strong>kasm-user</strong> + 本表单密码（<strong>不是</strong>账户名）。若只能看不能点，请断开重连或点「启动」同步权限。</p>
           <p class="hint">自动分配时：VNC 端口 = HTTPS − 1000；SSH 端口 = HTTPS − 4700（与 README 一致）。</p>
@@ -275,7 +283,7 @@
     <div class="modal" role="dialog" aria-labelledby="resources-modal-title">
       <h3 id="resources-modal-title">资源限制</h3>
       <p class="hint" id="resources-modal-sub"></p>
-      <p class="hint">CPU / 内存 / 进程数由 Docker cgroup 强制限制；磁盘为 <code>docker_os</code> 目录占用软限制，超限可自动停容器。保存后将<strong>重建容器</strong>。</p>
+      <p class="hint">CPU / 内存 / 进程数由 Docker cgroup 限制（变更需<strong>重建</strong>）；带宽由宿主机 tc 限制（变更<strong>不</strong>重建）；磁盘为软限制。</p>
       <div id="resources-live" class="hint" style="margin-bottom:0.75rem;"></div>
       <div id="resources-disk-bar"></div>
       <form id="resources-form">
@@ -296,9 +304,17 @@
             <label for="rm-disk">磁盘配额 GB（0=不限）</label>
             <input id="rm-disk" name="res_disk_quota_gb" type="number" min="0" max="2048" placeholder="30"/>
           </div>
+          <div>
+            <label for="rm-egress">上行带宽 Mbps（留空=不限）</label>
+            <input id="rm-egress" name="res_egress_mbit" type="text" placeholder="0.5"/>
+          </div>
+          <div>
+            <label for="rm-ingress">下行带宽 Mbps（留空=不限）</label>
+            <input id="rm-ingress" name="res_ingress_mbit" type="text" placeholder="1.5"/>
+          </div>
         </div>
         <div class="toolbar" style="margin-top:0.75rem;">
-          <button type="submit" class="btn-primary btn-sm">保存并重建</button>
+          <button type="submit" class="btn-primary btn-sm">保存</button>
           <button type="button" class="btn-ghost btn-sm" id="resources-check-disk">检查磁盘</button>
         </div>
       </form>
@@ -387,7 +403,9 @@
       const quota = r.disk_quota_gb || 0;
       let diskLine = quota > 0 ? `磁盘 ${used}/${quota}G` : `磁盘 ${used}G`;
       if (i.disk_over_limit) diskLine += ' ⚠';
-      return `<span class="res-cell">${parts.join(' / ')}<br/>${diskLine}</span>`;
+      const up = r.egress_mbit ? `↑${r.egress_mbit}` : '↑∞';
+      const down = r.ingress_mbit ? `↓${r.ingress_mbit}` : '↓∞';
+      return `<span class="res-cell">${parts.join(' / ')}<br/>${up} ${down} Mbps<br/>${diskLine}</span>`;
     }
 
     function formatPortDrift(i) {
@@ -670,14 +688,22 @@
         document.getElementById('rm-memory').value = c.memory || '';
         document.getElementById('rm-pids').value = c.pids_limit || '';
         document.getElementById('rm-disk').value = c.disk_quota_gb != null ? c.disk_quota_gb : '';
+        document.getElementById('rm-egress').value = c.egress_mbit || '';
+        document.getElementById('rm-ingress').value = c.ingress_mbit || '';
         const live = data.live || {};
+        const bwLive = data.bandwidth_live || {};
         const liveParts = [];
         if (live.cpus != null) liveParts.push(`CPU ${live.cpus}`);
         if (live.memory) liveParts.push(`MEM ${live.memory}`);
         if (live.pids_limit) liveParts.push(`PIDS ${live.pids_limit}`);
+        if (bwLive.egress_mbit || bwLive.ingress_mbit) {
+          const bu = bwLive.egress_mbit || '∞';
+          const bd = bwLive.ingress_mbit || '∞';
+          liveParts.push(`带宽 ↑${bu}/↓${bd} Mbps`);
+        }
         liveEl.textContent = liveParts.length
-          ? 'Docker 当前：' + liveParts.join(' · ')
-          : 'Docker 当前：未检测到 cgroup 限制（可能尚未重建）';
+          ? '当前生效：' + liveParts.join(' · ')
+          : '当前生效：未检测到 cgroup / 带宽限制';
         renderDiskBar(data.disk_usage_gb, c.disk_quota_gb);
         const diskOver = c.disk_quota_gb > 0 && data.disk_usage_gb >= c.disk_quota_gb;
         if (diskOver) {
@@ -733,7 +759,7 @@
       resourcesForm.addEventListener('submit', async (ev) => {
         ev.preventDefault();
         if (!resourcesModalContainer) return;
-        if (!confirm('保存资源限制？若修改了 CPU/内存/进程数将重建容器（短暂中断）；仅改磁盘配额则不会重建。')) return;
+        if (!confirm('保存资源限制？若修改了 CPU/内存/进程数将重建容器（短暂中断）；仅改带宽或磁盘配额不会重建。')) return;
         const errEl = document.getElementById('resources-err');
         const statusEl = document.getElementById('resources-status');
         const submitBtn = resourcesForm.querySelector('button[type="submit"]');
@@ -751,8 +777,8 @@
           await refreshResourcesModal();
           await loadList();
           const msgs = [];
-          if (data.recreate_skipped) msgs.push('磁盘配额已更新（未重建容器）');
-          if (data.recreate_ok === false) msgs.push('配置已保存，但容器重建未成功，请点「重建」');
+          if (data.recreate_skipped && !data.warnings?.length) msgs.push('配置已保存。');
+          if (data.recreate_ok === false) msgs.push('配置已保存，但部分项未成功应用，请查看下方说明或点「重建」。');
           if (data.warnings && data.warnings.length) msgs.push(...data.warnings);
           if (msgs.length) {
             statusEl.className = data.recreate_ok === false ? 'hint' : 'ok-msg';

@@ -82,6 +82,24 @@ cd /data
 ./install-host-vnc.sh
 ```
 
+脚本安装宿主机 VNC 共享，**自动选择后端**：
+
+| 后端 | 剪贴板 | 中文 |
+|------|--------|------|
+| **x11vnc**（Ubuntu 22.04 默认） | ✅ 双向可用 | ⚠️ 可能乱码（RFB Latin-1） |
+| **TigerVNC x0vncserver ≥1.15**（安装到 `/opt/tigervnc`） | ✅ | ✅ UTF-8 |
+
+> Ubuntu apt 自带的 TigerVNC 1.12 的 `x0vncserver` **没有剪贴板实现**，若强行使用会导致完全无法复制粘贴。脚本会优先尝试从上游安装 1.16，失败则回退 x11vnc。
+
+```bash
+cd /data
+./install-host-vnc.sh
+# 仅 x11vnc：VNC_BACKEND=x11vnc ./install-host-vnc.sh
+# 强制重试上游 TigerVNC：INSTALL_TIGERVNC_UTF8=1 ./install-host-vnc.sh
+```
+
+若曾装过 x11vnc，安装时会自动停用 `x11vnc.service` 并启用 `host-vnc.service`。
+
 可选环境变量：
 
 - `VNC_PORT`：宿主机 VNC 监听端口（默认 `5900`）
@@ -90,11 +108,22 @@ cd /data
 安装完成后可用：
 
 - `vnc://<宿主机IP>:5900`（端口按 `VNC_PORT`）
-- `systemctl status x11vnc --no-pager` 查看服务状态
+- `systemctl status host-vnc --no-pager` 查看服务状态
 
-若状态里出现 `-auth guess: failed ... display=':0'`，通常是图形会话不在 `:0`（如 `:10`）。新版 `install-host-vnc.sh` 已改为自动发现显示会话（`-find`），重新执行一次脚本即可修复。
+Windows 端请使用 **TigerVNC Viewer 1.12+**（或支持 Extended Clipboard 的客户端）。启动脚本 `scripts/host-vnc-start.sh` 会自动发现当前用户的 X 会话（含 xrdp 的 `:10` 等非 `:0` 显示）。
 
-默认访问：
+**浏览器访问宿主机桌面**（类似容器 Kasm Web，剪贴板走 Web/UTF-8 通道）：
+
+```bash
+cd /data
+./install-host-web-vnc.sh
+```
+
+- 访问：`http://<宿主机IP>:6080/vnc.html`（端口可用 `WEB_PORT` 修改）
+- 在 noVNC 侧边栏输入 VNC 密码（与 `~/.vnc/passwd` 相同）
+- **中文剪贴板**：需 VNC 后端为 **TigerVNC ≥1.15**（`INSTALL_TIGERVNC_UTF8=1 ./install-host-vnc.sh` 安装到 `/opt/tigervnc` 后 `systemctl restart host-vnc host-web-vnc`）；仅 x11vnc 时 Web 里中文仍可能乱码
+
+默认访问（**容器** Kasm 桌面）：
 
 - `https://<服务器IP>:6901`
 - `vnc://<服务器IP>:5901`（推荐本机 VNC 客户端，通常比浏览器更流畅）

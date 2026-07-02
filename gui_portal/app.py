@@ -28,14 +28,18 @@ INSTALL_SSHD_STARTUP = ROOT / "scripts" / "install-sshd-startup.sh"
 SYNC_KASM_WEB_PASSWORD = ROOT / "scripts" / "sync-kasm-web-password.sh"
 INSTALL_APP_WRAPPERS = ROOT / "scripts" / "install-container-app-wrappers.sh"
 CHECK_DISK_SCRIPT = ROOT / "scripts" / "check-instance-disk-usage.sh"
+LIMIT_BW_SCRIPT = ROOT / "scripts" / "limit-container-bandwidth.sh"
 STATE_PATH = Path(os.environ.get("GUI_PORTAL_STATE", ROOT / "gui_portal" / "instances.json"))
 SNAPSHOT_DIR = Path(os.environ.get("GUI_PORTAL_SNAPSHOT_DIR", ROOT / "gui_portal" / "snapshots"))
 BASE_GUI = int(os.environ.get("GUI_PORTAL_BASE_GUI", "6901"))
 PORT_MAX = int(os.environ.get("GUI_PORTAL_PORT_MAX", "6999"))
+# gui_to_ssh(g)=g-4700；宿主机 SSH 映射须 ≥1024 ⇒ g ≥5724
+MIN_GUI_PORT = int(os.environ.get("GUI_PORTAL_MIN_GUI", "5724"))
 ADMIN_PASSWORD = os.environ.get("GUI_PORTAL_ADMIN_PASSWORD", "").strip() or None
 
 _SLUG_OK = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 _MEM_RE = re.compile(r"^(\d+)([mg])$", re.IGNORECASE)
+_MBIT_RE = re.compile(r"^[0-9]+(\.[0-9])?$")
 
 _BUILTIN_DEFAULT_RESOURCES: dict[str, Any] = {
     "cpus": os.environ.get("GUI_PORTAL_DEFAULT_CPUS", "2"),
@@ -57,6 +61,26 @@ def gui_to_vnc(gui_port: int) -> int:
 def gui_to_ssh(gui_port: int) -> int:
     """与 README 一致：6901↔2201，端口差 4700。"""
     return gui_port - 4700
+
+
+def validate_gui_port_plan(gui: int) -> tuple[int, int]:
+    """校验 GUI 及其衍生的 VNC/SSH 宿主机映射端口（须 ≥1024）。"""
+    if gui < MIN_GUI_PORT or gui > 65535:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"GUI 端口须在 {MIN_GUI_PORT}–65535（留空则自动从 {BASE_GUI} 起分配）；"
+                "过小会导致 SSH/VNC 映射端口无效"
+            ),
+        )
+    vnc = gui_to_vnc(gui)
+    ssh = gui_to_ssh(gui)
+    if vnc < 1024 or ssh < 1024:
+        raise HTTPException(
+            status_code=400,
+            detail=f"GUI 端口 {gui} 对应 VNC={vnc}、SSH={ssh}，宿主机映射端口须 ≥ 1024",
+        )
+    return vnc, ssh
 
 
 _BUILTIN_CONTAINER_PORTS = {6901, 5901, 22}
@@ -178,7 +202,7 @@ def default_resources(state: Optional[dict[str, Any]] = None) -> dict[str, Any]:
 
 
 def normalize_resources(raw: Any, *, apply_defaults: bool = True) -> dict[str, Any]:
-    """将 resources 规范为 {cpus, memory, pids_limit, disk_quota_gb}，空值表示不限。"""
+    """将 resources 规范为 {cpus, memory, pids_limit, disk_quota_gb, egress_mbit, ingress_mbit}，空值表示不限。"""
     base = default_resources() if apply_defaults and not raw else {}
     src = raw if isinstance(raw, dict) else {}
     out: dict[str, Any] = {}
@@ -213,6 +237,13 @@ def normalize_resources(raw: Any, *, apply_defaults: bool = True) -> dict[str, A
     else:
         out["disk_quota_gb"] = 0
 
+    for key in ("egress_mbit", "ingress_mbit"):
+        val = src.get(key, base.get(key))
+        if val is not None and str(val).strip():
+            out[key] = str(val).strip()
+        else:
+            out[key] = None
+
     return out
 
 
@@ -243,6 +274,81 @@ def validate_resources(res: dict[str, Any]) -> None:
     if disk is not None and (not isinstance(disk, int) or disk < 0 or disk > 2048):
         raise HTTPException(status_code=400, detail="磁盘配额须在 0（不限）或 1–2048 GB 之间")
 
+    for key, label in (("egress_mbit", "上行带宽"), ("ingress_mbit", "下行带宽")):
+        val = res.get(key)
+        if val is None:
+            continue
+        if not _MBIT_RE.match(str(val)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{label}须为 Mbps 数字，精确到 0.1（如 20、15.5、0.1）",
+            )
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{label}格式无效")
+        if v < 0.1 or v > 10000:
+            raise HTTPException(status_code=400, detail=f"{label}须在 0.1–10000 Mbps 之间")
+
+
+def resources_from_form(
+    *,
+    res_cpus: str = "",
+    res_memory: str = "",
+    res_pids_limit: str = "",
+    res_disk_quota_gb: str = "",
+    res_egress_mbit: str = "",
+    res_ingress_mbit: str = "",
+    apply_defaults: bool = True,
+    explicit_bandwidth: bool = False,
+    explicit_docker_limits: bool = False,
+) -> dict[str, Any]:
+    """从管理台表单解析 resources；explicit_* 时留空表示取消对应限制。"""
+    raw_res: dict[str, Any] = {}
+    if explicit_docker_limits:
+        raw_res["cpus"] = res_cpus.strip() or None
+        raw_res["memory"] = res_memory.strip() or None
+        if res_pids_limit.strip():
+            try:
+                raw_res["pids_limit"] = int(res_pids_limit.strip())
+            except ValueError:
+                raise HTTPException(status_code=400, detail="进程数限额须为整数")
+        else:
+            raw_res["pids_limit"] = None
+        if res_disk_quota_gb.strip():
+            try:
+                raw_res["disk_quota_gb"] = int(res_disk_quota_gb.strip())
+            except ValueError:
+                raise HTTPException(status_code=400, detail="磁盘配额须为整数 GB")
+        else:
+            raw_res["disk_quota_gb"] = 0
+    else:
+        if res_cpus.strip():
+            raw_res["cpus"] = res_cpus.strip()
+        if res_memory.strip():
+            raw_res["memory"] = res_memory.strip()
+        if res_pids_limit.strip():
+            try:
+                raw_res["pids_limit"] = int(res_pids_limit.strip())
+            except ValueError:
+                raise HTTPException(status_code=400, detail="进程数限额须为整数")
+        if res_disk_quota_gb.strip():
+            try:
+                raw_res["disk_quota_gb"] = int(res_disk_quota_gb.strip())
+            except ValueError:
+                raise HTTPException(status_code=400, detail="磁盘配额须为整数 GB")
+    if explicit_bandwidth:
+        raw_res["egress_mbit"] = res_egress_mbit.strip() or None
+        raw_res["ingress_mbit"] = res_ingress_mbit.strip() or None
+    else:
+        if res_egress_mbit.strip():
+            raw_res["egress_mbit"] = res_egress_mbit.strip()
+        if res_ingress_mbit.strip():
+            raw_res["ingress_mbit"] = res_ingress_mbit.strip()
+    resources = normalize_resources(raw_res if raw_res else None, apply_defaults=apply_defaults)
+    validate_resources(resources)
+    return resources
+
 
 def resources_to_env(res: dict[str, Any]) -> dict[str, str]:
     env: dict[str, str] = {}
@@ -253,6 +359,8 @@ def resources_to_env(res: dict[str, Any]) -> dict[str, str]:
         env["MEMSWAP_LIMIT"] = str(res["memory"])
     if res.get("pids_limit"):
         env["PIDS_LIMIT"] = str(res["pids_limit"])
+    env["EGRESS_MBIT"] = str(res["egress_mbit"]) if res.get("egress_mbit") else ""
+    env["INGRESS_MBIT"] = str(res["ingress_mbit"]) if res.get("ingress_mbit") else ""
     return env
 
 
@@ -515,11 +623,38 @@ def next_free_gui_port(state: dict[str, Any]) -> int:
 
 
 def docker_limits_changed(old: dict[str, Any], new: dict[str, Any]) -> bool:
-    """CPU / 内存 / 进程数变更需重建容器；仅磁盘配额变更不需要。"""
+    """CPU / 内存 / 进程数变更需重建容器；磁盘与带宽变更不需要。"""
     for key in ("cpus", "memory", "pids_limit"):
         if old.get(key) != new.get(key):
             return True
     return False
+
+
+def bandwidth_limits_changed(old: dict[str, Any], new: dict[str, Any]) -> bool:
+    for key in ("egress_mbit", "ingress_mbit"):
+        if old.get(key) != new.get(key):
+            return True
+    return False
+
+
+def read_bandwidth_live(container_name: str) -> Optional[dict[str, Any]]:
+    """读取 limit-container-bandwidth.sh 写入的 bandwidth.state（宿主机 tc 已应用）。"""
+    sf = ROOT / "docker_os" / container_name / "bandwidth.state"
+    if not sf.is_file():
+        return None
+    data: dict[str, str] = {}
+    for line in sf.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        data[k.strip().lower()] = v.strip()
+    if not data.get("veth"):
+        return None
+    return {
+        "egress_mbit": data.get("egress_mbit") or None,
+        "ingress_mbit": data.get("ingress_mbit") or None,
+        "veth": data.get("veth"),
+    }
 
 
 def run_script(env: dict[str, str], *, recreate: bool = False) -> tuple[int, str, str]:
@@ -1041,6 +1176,8 @@ def api_create(
     res_memory: str = Form(default=""),
     res_pids_limit: str = Form(default=""),
     res_disk_quota_gb: str = Form(default=""),
+    res_egress_mbit: str = Form(default=""),
+    res_ingress_mbit: str = Form(default=""),
 ):
     check_session(request)
     if not password.strip():
@@ -1067,36 +1204,27 @@ def api_create(
             gui = int(str(gui_port).strip())
         except ValueError:
             raise HTTPException(status_code=400, detail="GUI 端口必须是整数")
-        if gui < 1024 or gui > 65535:
-            raise HTTPException(status_code=400, detail="端口范围无效")
-        vnc = gui_to_vnc(gui)
+        vnc, ssh = validate_gui_port_plan(gui)
         used = collect_used_gui_ports(state)
         if gui in used:
             raise HTTPException(status_code=400, detail="该 GUI 端口已被登记占用")
         if port_in_use("0.0.0.0", gui) or port_in_use("0.0.0.0", vnc):
             raise HTTPException(status_code=400, detail="端口在宿主机上已被占用")
+        if port_in_use("0.0.0.0", ssh):
+            raise HTTPException(status_code=400, detail="端口在宿主机上已被占用（SSH 映射）")
     else:
         gui = next_free_gui_port(state)
 
     vnc_native = gui_to_vnc(gui)
 
-    raw_res: dict[str, Any] = {}
-    if res_cpus.strip():
-        raw_res["cpus"] = res_cpus.strip()
-    if res_memory.strip():
-        raw_res["memory"] = res_memory.strip()
-    if res_pids_limit.strip():
-        try:
-            raw_res["pids_limit"] = int(res_pids_limit.strip())
-        except ValueError:
-            raise HTTPException(status_code=400, detail="进程数限额须为整数")
-    if res_disk_quota_gb.strip():
-        try:
-            raw_res["disk_quota_gb"] = int(res_disk_quota_gb.strip())
-        except ValueError:
-            raise HTTPException(status_code=400, detail="磁盘配额须为整数 GB")
-    resources = normalize_resources(raw_res if raw_res else None)
-    validate_resources(resources)
+    resources = resources_from_form(
+        res_cpus=res_cpus,
+        res_memory=res_memory,
+        res_pids_limit=res_pids_limit,
+        res_disk_quota_gb=res_disk_quota_gb,
+        res_egress_mbit=res_egress_mbit,
+        res_ingress_mbit=res_ingress_mbit,
+    )
 
     env = {
         "CONTAINER_NAME": cname,
@@ -1160,6 +1288,7 @@ def api_get_resources(request: Request, container_name: str):
     return {
         "configured": res,
         "live": live,
+        "bandwidth_live": read_bandwidth_live(container_name),
         "disk_usage_gb": used_gb,
         "disk_status": disk_st,
         "default_resources": default_resources(state),
@@ -1175,34 +1304,28 @@ def api_set_resources(
     res_memory: str = Form(default=""),
     res_pids_limit: str = Form(default=""),
     res_disk_quota_gb: str = Form(default=""),
+    res_egress_mbit: str = Form(default=""),
+    res_ingress_mbit: str = Form(default=""),
 ):
-    """更新资源限额；CPU/内存/进程数变更会重建容器，仅磁盘配额变更则立即保存。"""
+    """更新资源限额；CPU/内存/进程数变更会重建容器；带宽/磁盘变更不重建。"""
     check_session(request)
     state = load_state()
     inst = _instance_or_404(state, container_name)
     old_res = normalize_resources(inst.get("resources"), apply_defaults=False)
 
-    raw_res: dict[str, Any] = {}
-    raw_res["cpus"] = res_cpus.strip() or None
-    raw_res["memory"] = res_memory.strip() or None
-    if res_pids_limit.strip():
-        try:
-            raw_res["pids_limit"] = int(res_pids_limit.strip())
-        except ValueError:
-            raise HTTPException(status_code=400, detail="进程数限额须为整数")
-    else:
-        raw_res["pids_limit"] = None
-    if res_disk_quota_gb.strip():
-        try:
-            raw_res["disk_quota_gb"] = int(res_disk_quota_gb.strip())
-        except ValueError:
-            raise HTTPException(status_code=400, detail="磁盘配额须为整数 GB")
-    else:
-        raw_res["disk_quota_gb"] = 0
-
-    resources = normalize_resources(raw_res, apply_defaults=False)
-    validate_resources(resources)
+    resources = resources_from_form(
+        res_cpus=res_cpus,
+        res_memory=res_memory,
+        res_pids_limit=res_pids_limit,
+        res_disk_quota_gb=res_disk_quota_gb,
+        res_egress_mbit=res_egress_mbit,
+        res_ingress_mbit=res_ingress_mbit,
+        apply_defaults=False,
+        explicit_bandwidth=True,
+        explicit_docker_limits=True,
+    )
     needs_recreate = docker_limits_changed(old_res, resources)
+    bw_changed = bandwidth_limits_changed(old_res, resources)
 
     inst["resources"] = resources
     try:
@@ -1238,11 +1361,27 @@ def api_set_resources(
                 "容器已重建；密码与 SSH 正在后台同步（约 1 分钟）。"
                 "若桌面异常，请点「启动」再次同步。"
             )
-    else:
-        post_warnings.append("仅更新了磁盘配额，未重建容器。")
+    elif bw_changed:
+        env = script_env_for_instance(inst)
+        if not env.get("VNC_PW"):
+            raise HTTPException(status_code=400, detail="状态中无密码，无法更新带宽")
+        code, out, err = run_script(env, recreate=False)
+        if code != 0:
+            recreate_ok = False
+            post_warnings.append(
+                "带宽配置已保存，但宿主机 tc 未成功应用（需 sudo）。"
+                f"\n{(err or out)[-800:]}"
+            )
+        else:
+            up = resources.get("egress_mbit") or "∞"
+            down = resources.get("ingress_mbit") or "∞"
+            post_warnings.append(f"带宽限制已更新（上行 {up} / 下行 {down} Mbps，未重建容器）。")
+    elif old_res.get("disk_quota_gb") != resources.get("disk_quota_gb"):
+        post_warnings.append("磁盘配额已更新（未重建容器）。")
 
     save_state(state)
     live = docker_inspect_resources(container_name)
+    bw_live = read_bandwidth_live(container_name)
     resp: dict[str, Any] = {
         "ok": True,
         "saved": True,
@@ -1250,7 +1389,8 @@ def api_set_resources(
         "recreate_skipped": recreate_skipped,
         "resources": resources,
         "live": live,
-        "log": (out + err)[-4000:] if needs_recreate else "",
+        "bandwidth_live": bw_live,
+        "log": (out + err)[-4000:] if needs_recreate or bw_changed else "",
     }
     if post_warnings:
         resp["warnings"] = post_warnings

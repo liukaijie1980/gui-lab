@@ -14,6 +14,7 @@
 #   GUI_PORT / VNC_NATIVE_PORT / SSH_PORT / VNC_PW / CONTAINER_NAME / HOME_DIR / COMPOSE_PROJECT_NAME
 #   EXTRA_PORTS  额外端口映射，逗号分隔，如 8080:80/tcp,8443:443/udp（写入 docker_os/<容器>/extra-ports.compose.yml）
 #   CPU_LIMIT / MEM_LIMIT / MEMSWAP_LIMIT / PIDS_LIMIT  容器资源限制（写入 resource-limits.compose.yml）
+#   EGRESS_MBIT / INGRESS_MBIT  互联网带宽限制（Mbps，0.1 精度；宿主机 tc，容器 up 后自动应用）
 #   RECREATE=1  强制重建已有容器
 # 参数：
 #   $1  可选，容器名（未设 CONTAINER_NAME 时等同该参数）
@@ -89,6 +90,12 @@ HOME_DIR="./docker_os/${CONTAINER_NAME}/home"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-${CONTAINER_NAME}}"
 INSTANCE_DIR="${SCRIPT_DIR}/docker_os/${CONTAINER_NAME}"
 ENV_FILE="${INSTANCE_DIR}/.env"
+
+if [[ "${SSH_PORT}" -lt 1024 || "${VNC_NATIVE_PORT}" -lt 1024 ]]; then
+  echo "错误: GUI_PORT=${GUI_PORT} 导致 SSH=${SSH_PORT} 或 VNC=${VNC_NATIVE_PORT} 低于 1024，Docker 无法绑定。" >&2
+  echo "请将 GUI_PORT 设为 ≥ 5724，或在管理台留空自动分配（默认从 6901 起）。" >&2
+  exit 1
+fi
 
 mkdir -p "${INSTANCE_DIR}"
 
@@ -199,6 +206,8 @@ CPU_LIMIT=${CPU_LIMIT:-}
 MEM_LIMIT=${MEM_LIMIT:-}
 MEMSWAP_LIMIT=${MEMSWAP_LIMIT:-}
 PIDS_LIMIT=${PIDS_LIMIT:-}
+EGRESS_MBIT=${EGRESS_MBIT:-}
+INGRESS_MBIT=${INGRESS_MBIT:-}
 HTTP_PROXY=${HTTP_PROXY_MAPPED}
 HTTPS_PROXY=${HTTPS_PROXY_MAPPED}
 ALL_PROXY=${ALL_PROXY_MAPPED}
@@ -304,6 +313,16 @@ elif [[ -f "${RESOURCE_OVERRIDE}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 带宽限制（宿主机 tc；写入 .env，容器 up 后由 limit-container-bandwidth.sh 应用）
+# ---------------------------------------------------------------------------
+EGRESS_MBIT="${EGRESS_MBIT:-}"
+INGRESS_MBIT="${INGRESS_MBIT:-}"
+if [[ -n "${EGRESS_MBIT}" || -n "${INGRESS_MBIT}" ]]; then
+  _bw_summary="上行=${EGRESS_MBIT:-∞}Mbps 下行=${INGRESS_MBIT:-∞}Mbps"
+  echo "带宽限制: ${_bw_summary}"
+fi
+
+# ---------------------------------------------------------------------------
 # custom_startup：挂载宿主机脚本（sshd + VNC_PW 同步），无需重建镜像即可生效
 # ---------------------------------------------------------------------------
 STARTUP_OVERRIDE="${INSTANCE_DIR}/custom-startup.compose.yml"
@@ -375,16 +394,33 @@ if [[ -x "${SYNC_KASM_PW}" ]]; then
     echo "警告: Kasm Web 密码同步未完成（容器可能仍在启动，稍后在管理台点「启动」重试）。" >&2
 fi
 
+# 等待容器 running（包装脚本安装与带宽 tc 共用）
+_container_ready=0
+for _w in $(seq 1 45); do
+  if docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -q true; then
+    _container_ready=1
+    break
+  fi
+  sleep 2
+done
+
 # /usr/local/bin 不在持久化卷内，重建后会清空；每次 up/recreate 后安装 cursor/claude 包装脚本
 INSTALL_WRAPPERS="${SCRIPT_DIR}/scripts/install-container-app-wrappers.sh"
-if [[ -x "${INSTALL_WRAPPERS}" ]]; then
-  for _w in $(seq 1 45); do
-    if docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -q true; then
-      break
-    fi
-    sleep 2
-  done
+if [[ -x "${INSTALL_WRAPPERS}" && "${_container_ready}" -eq 1 ]]; then
   if ! "${INSTALL_WRAPPERS}" "${CONTAINER_NAME}"; then
     echo "警告: Cursor 包装脚本安装失败（可稍后执行 ${INSTALL_WRAPPERS} ${CONTAINER_NAME}）。" >&2
   fi
+fi
+
+LIMIT_BW="${SCRIPT_DIR}/scripts/limit-container-bandwidth.sh"
+if [[ -x "${LIMIT_BW}" && "${_container_ready}" -eq 1 ]]; then
+  if [[ -n "${EGRESS_MBIT:-}" || -n "${INGRESS_MBIT:-}" ]]; then
+    if ! "${LIMIT_BW}" apply "${CONTAINER_NAME}" "${EGRESS_MBIT:-}" "${INGRESS_MBIT:-}"; then
+      echo "警告: 带宽限制未生效（需 root/sudo 执行 tc；可稍后手动: ${LIMIT_BW} apply ${CONTAINER_NAME} ${EGRESS_MBIT:-} ${INGRESS_MBIT:-}）。" >&2
+    fi
+  else
+    "${LIMIT_BW}" clear "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  fi
+elif [[ "${_container_ready}" -eq 0 ]]; then
+  echo "警告: 容器 ${CONTAINER_NAME} 未在预期时间内进入 running，已跳过包装脚本与带宽限制。" >&2
 fi

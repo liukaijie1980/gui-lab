@@ -4,7 +4,9 @@
       "cpus": "2",
       "memory": "4g",
       "pids_limit": 512,
-      "disk_quota_gb": 30
+      "disk_quota_gb": 30,
+      "egress_mbit": null,
+      "ingress_mbit": null
     }
   },
   "instances": [
@@ -24,7 +26,9 @@
         "cpus": "2",
         "memory": "4g",
         "pids_limit": 512,
-        "disk_quota_gb": 30
+        "disk_quota_gb": 30,
+        "egress_mbit": null,
+        "ingress_mbit": null
       }
     }
   ]
